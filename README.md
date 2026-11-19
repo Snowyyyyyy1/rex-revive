@@ -9,6 +9,10 @@ Rex restores your sessions, tabs, and splits after a restart, but every tab come
 | Claude Code | Reopens on its conversation: `claude --resume <id>` |
 | Codex | Reopens on its conversation: `codex resume <id>` |
 | pi | Reopens on its session: `pi --session <id>` |
+| Gemini CLI | Reopens on its session: `gemini --resume <id>` |
+| Droid | Reopens on its session: `droid --resume <id>` |
+| Amp | Reopens on its thread: `amp threads continue <T-id>` |
+| Cursor Agent | Reopens on its chat: `cursor-agent --resume <id>` |
 | Any other program | Typed at the prompt, not run. Press Enter if you want it. |
 | An idle shell | Left alone |
 
@@ -24,6 +28,7 @@ cd rex-revive
 
 - `--add-to-config` loads the command palette actions from Rex's `init.lua`.
 - `--pi` installs a small pi extension (see [pi](#pi)). Leave it out if you don't use pi.
+- `--gemini`, `--droid`, and `--amp` do the same for Gemini CLI, Droid, and Amp (see [Gemini CLI, Droid, and Amp](#gemini-cli-droid-and-amp)). Leave out the ones you don't use. Once installed, each is kept up to date by a plain `./install.sh`.
 - `--no-service` copies the files without starting the watcher.
 
 Without `--add-to-config` and the `require` line, the question after a restart can't be shown, and every chat comes back on its own.
@@ -31,6 +36,8 @@ Without `--add-to-config` and the `require` line, the question after a restart c
 The installer copies rex-revive to `~/Library/Application Support/rex-revive/app` (macOS) or `~/.local/share/rex-revive` (Linux) and starts it as a login service: a launchd agent, or a systemd user service. Run `./install.sh` again to update.
 
 Requirements: Rex with a recent Lua API (control API revision 17 or later for the questions, such as **Choose Chats to Reopen…**), and `lsof`.
+
+**The log** (macOS: `~/Library/Logs/rex-revive.log`; Linux: `journalctl --user -u rex-revive`) has a line for each restore, each closed chat, and each reopened one, and says why the watcher stopped. An `Error: interrupted` line is the watcher being stopped: the line after it says by what.
 
 ## Using it
 
@@ -42,12 +49,12 @@ To reopen every chat without being asked, choose **Choose What Happens After a R
 
 **Titles.** Claude Code: your rename (`/rename`), else Claude's own title, else your first prompt. Codex: the thread's name, else your first prompt; this needs `sqlite3`, which macOS has. pi keeps no title, so it's your first prompt.
 
-**Closed chats.** Close a tab with a chat in it, or quit the agent, and rex-revive remembers the chat: the last 20, newest first. So does a chat you leave unticked after a restart. Press **⇧⌘T** to reopen the chat closed last in a new tab of the session you're in, in the chat's folder. Press it again for the one before. Rex has no default for ⇧⌘T, and rex-revive binds it only when your `init.lua` doesn't bind it before `require("rex_revive")`. To give the key back, add `rex.unbind("shift+cmd+t", "revive_reopen_last")` after that line.
+**Closed chats.** Close a tab with a chat in it, or quit the agent, and rex-revive remembers the chat: the last 20, newest first. So does a chat you leave unticked after a restart. Press **⇧⌘T** to reopen the chat closed last, in the session you're in and the chat's folder. It comes back in its own tab if its agent quit there, in its old place if it was one pane of a split, else in a new tab. Press it again for the one before. Rex has no default for ⇧⌘T, and rex-revive binds it only when your `init.lua` doesn't bind it before `require("rex_revive")`. To give the key back, add `rex.unbind("shift+cmd+t", "revive_reopen_last")` after that line.
 
 From the command palette (search for "revive"):
 
 - **Choose Chats to Reopen…** lists the saved chats that aren't open, recent ones ticked, and reopens the ones you tick.
-- **Reopen a Closed Chat…** lists the closed chats and reopens the one you pick in a new tab.
+- **Reopen a Closed Chat…** lists the closed chats and reopens the one you pick, as ⇧⌘T does.
 - **Reopen the Last Closed Chat** (⇧⌘T) reopens the chat closed last.
 - **Reopen Chats and Programs in Their Tabs** brings back everything at once.
 - **Save Open Chats and Programs Now** saves right away.
@@ -66,8 +73,8 @@ rex do "$S" mode=restore only=claude:ID      # bring back just these chats (agen
 rex do "$S" mode=restore programs=false      # chats only, no other programs
 rex do "$S" mode=choices                     # the chats a restore would bring back, as JSON
 rex do "$S" mode=closed                      # the closed chats, newest first, as JSON
-rex do "$S" mode=reopen                      # the chat closed last, in a new tab (key=agent:ID for another,
-                                             #   session=ID for the session; else the chat's own)
+rex do "$S" mode=reopen                      # the chat closed last (key=agent:ID for another; session=ID
+                                             #   for the session, else the chat's own)
 rex do "$S" mode=settings ask=false          # reopen every chat after a restart, without asking (ask=true: ask again)
 ```
 
@@ -80,7 +87,10 @@ Rex keeps each tab's block ID across a restart. rex-revive records, per block, w
 - **Claude Code** writes `~/.claude/sessions/<pid>.json` for each running chat, with its session ID.
 - **pi** writes nothing of the kind and hides its command line, so the extension (`install.sh --pi`) writes `~/.pi/agent/rex-revive/<pid>.json` the same way, with pi's options.
 - **Codex** holds its session file, `~/.codex/sessions/…/rollout-…-<id>.jsonl`, open while it runs.
-- Failing those, the session named on the command line (`--resume <id>`, `resume <id>`, `--session <id>`).
+- **Gemini CLI** and **Droid** do neither, so a SessionStart hook (`install.sh --gemini`, `--droid`) writes `~/.gemini/rex-revive/<pid>.json` or `~/.factory/rex-revive/<pid>.json`.
+- **Amp** does neither either, so a plugin (`install.sh --amp`) writes `~/.local/share/amp/rex-revive/<pid>.json`.
+- **Cursor Agent** holds its chat's store open, `~/.cursor/chats/…/<id>/store.db`, from the chat's first message on. It needs nothing installed.
+- Failing those, the session named on the command line (`--resume <id>`, `-r <id>`, `resume <id>`, `--session <id>`, `threads continue <T-id>`).
 
 A pid can be reused, so a pid record only counts when its start time matches the process's own. A chat whose conversation isn't certain comes back typed, not run.
 
@@ -98,6 +108,17 @@ A pid can be reused, so a pid record only counts when its start time matches the
 pi hides which session it is on: it keeps no file open and blanks its command line. Without the extension, rex-revive sees that a tab runs pi, but not which session, so pi comes back typed as `pi`, not resumed.
 
 The extension is about 50 lines ([integrations/pi-rex-revive.ts](integrations/pi-rex-revive.ts)). It writes one small JSON file per running pi and removes it when pi quits. It makes no network calls and prints nothing. pi chats started before you install it aren't covered.
+
+## Gemini CLI, Droid, and Amp
+
+Like pi, none of them shows which session a running agent is on: they keep no file open and write no record of their own.
+
+- **Gemini CLI and Droid** run hooks from `settings.json` (`~/.gemini/settings.json`, `~/.factory/settings.json`). `install.sh --gemini` and `--droid` add one SessionStart hook, [integrations/agent-hook.sh](integrations/agent-hook.sh), next to any hooks you have. They back up the file first (`settings.json.rex-revive-backup`) and need `jq`. The hook runs on start, `/resume`, and `/clear`, finds the agent among its parent processes, and writes its pid, session ID, and start time.
+- **Amp** loads plugins from `~/.config/amp/plugins`. `install.sh --amp` copies [integrations/amp-rex-revive.ts](integrations/amp-rex-revive.ts) there. It writes amp's pid and thread ID when a session starts and when the thread changes, and removes the file when amp quits. amp runs plugins in a child process, so the plugin records its parent, the amp in your tab. Amp marks its plugin API as experimental.
+
+None of them makes network calls or prints anything. Chats started before you install them aren't covered. `./uninstall.sh` removes the hooks and the plugin.
+
+Titles: Gemini CLI's first prompt; Amp's thread title, else its first prompt. Droid's and Cursor Agent's chats show their folder.
 
 ## Limits
 

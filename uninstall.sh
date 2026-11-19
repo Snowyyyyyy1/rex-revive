@@ -5,7 +5,8 @@
 #   ./uninstall.sh --purge  delete the saves too
 #
 # [INPUT]: depends on the paths install.sh writes
-# [OUTPUT]: removes the login service and its log, the app, the palette actions, and the pi extension
+# [OUTPUT]: removes the login service and its log, the app, the palette actions, the pi extension,
+#           the Gemini and Droid hooks (with jq), the amp plugin, and their records
 # [POS]: the exact inverse of install.sh; it leaves init.lua for you to edit.
 # [PROTOCOL]: Update this header on change, then check CLAUDE.md
 set -eu
@@ -39,7 +40,20 @@ fi
 
 rm -rf "$app"
 rm -f "$config/rex_revive.lua" "$HOME/.pi/agent/extensions/rex-revive.ts"
-rm -rf "$HOME/.pi/agent/rex-revive"
+rm -f "${XDG_CONFIG_HOME:-$HOME/.config}/amp/plugins/rex-revive.ts"
+rm -rf "$HOME/.pi/agent/rex-revive" "$HOME/.gemini/rex-revive" "$HOME/.factory/rex-revive" \
+  "$HOME/.local/share/amp/rex-revive"
+# The SessionStart hooks install.sh --gemini and --droid added.
+for file in "$HOME/.gemini/settings.json" "$HOME/.factory/settings.json"; do
+  [ -f "$file" ] && grep -q 'rex-revive.*agent-hook\.sh' "$file" || continue
+  if command -v jq >/dev/null 2>&1; then
+    jq '.hooks.SessionStart |= map(select(any(.hooks[]?; (.command // "") | test("rex-revive.*agent-hook\\.sh")) | not))' \
+      "$file" >"$file.rex-revive-new" && cat "$file.rex-revive-new" >"$file" && rm -f "$file.rex-revive-new"
+    echo "Removed the rex-revive SessionStart hook from $file"
+  else
+    echo "Remove the SessionStart hook that runs agent-hook.sh from $file (jq isn't installed to do it)."
+  fi
+done
 if [ "$purge" = 1 ]; then
   rm -rf "$state"
   echo "Removed rex-revive and its saves."

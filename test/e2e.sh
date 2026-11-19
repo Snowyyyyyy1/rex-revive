@@ -86,11 +86,13 @@ pis() { pgrep -f "^$T/bin/pi" | wc -l | tr -d ' '; }  # pi blanks its arguments
 typed() { grep -c '  type ' "$1" || true; }
 json() { jq -e "$@" >/dev/null; }                     # a jq check, quietly
 
-for agent in claude codex pi; do
-  cc -O0 -o "$T/bin/$agent" -DAGENT="\"$agent\"" -DHOME_DIR="\"$H\"" "$here/test/fake_agent.c"
+for agent in claude codex pi gemini droid amp cursor-agent; do
+  cc -O0 -o "$T/bin/$agent" -DAGENT="\"$agent\"" -DHOME_DIR="\"$H\"" \
+    -DHOOK="\"$here/integrations/agent-hook.sh\"" "$here/test/fake_agent.c"
 done
-mkdir -p "$H/.pi/agent/extensions" "$H/.claude/sessions"
+mkdir -p "$H/.pi/agent/extensions" "$H/.claude/sessions" "$H/.config/amp/plugins"
 cp "$here/integrations/pi-rex-revive.ts" "$H/.pi/agent/extensions/rex-revive.ts"
+cp "$here/integrations/amp-rex-revive.ts" "$H/.config/amp/plugins/rex-revive.ts"
 echo '{}' >"$H/.claude/sessions/notes.json"   # a record folder can hold other files
 CODEX=11111111-2222-4333-8444-555555555555
 CLAUDE=22222222-3333-4444-8555-666666666666
@@ -121,6 +123,14 @@ expect "an idle shell isn't saved" sh -c "! printf '%s\n' \"\$1\" | grep -q '^wo
 expect "two claude chats in one folder are told apart" \
   test -n "$PAIR_A" -a -n "$PAIR_B" -a "$PAIR_A" != "$PAIR_B" -a "$PAIR_A" != "$NEW_CLAUDE"
 expect "a new pi in another session" has '^side 1\.1 agent pi 00000000-0000-4000-8000-'
+expect "gemini, by its SessionStart hook's record" has '^more 1\.1 agent gemini 00000000-0000-4000-8000-'
+expect "droid, by its SessionStart hook's record" has '^more 2\.1 agent droid 00000000-0000-4000-8000-'
+expect "amp, by its plugin's record" has '^more 3\.1 agent amp T-00000000-0000-4000-8000-'
+expect "cursor-agent, by the chat store it holds" has '^more 4\.1 agent cursor-agent 00000000-0000-4000-8000-'
+GEMINI=$(field more 1.1)
+DROID=$(field more 2.1)
+AMP=$(field more 3.1)
+CURSOR=$(field more 4.1)
 
 echo "2. Restart: Rex brings back the tabs, rex-revive what ran in them"
 stop_server
@@ -154,6 +164,12 @@ expect "only the outside copy of it runs" test "$(running "$T/bin/claude --resum
 expect "its neighbour in the same folder is back" has "^work 6\.2 agent claude $PAIR_B\$"
 expect "a busy tab was waited for" grep -q 'trying again' "$T/startup.log"
 expect "the busy tab's pi is back" has "^side 1\.1 agent pi $SIDE_PI\$"
+expect "gemini is back on its session" has "^more 1\.1 agent gemini $GEMINI\$"
+expect "droid is back on its session" has "^more 2\.1 agent droid $DROID\$"
+expect "amp is back on its thread" has "^more 3\.1 agent amp $AMP\$"
+expect "amp's thread through threads continue" grep -q -- "/amp threads continue $AMP (run)" "$T/startup.log"
+expect "cursor-agent is back on its chat" has "^more 4\.1 agent cursor-agent $CURSOR\$"
+expect "cursor-agent's chat through --resume" grep -q -- "cursor-agent --resume $CURSOR (run)" "$T/startup.log"
 
 echo "3. Again on the same server: nothing is typed twice"
 D mode=startup >"$T/startup2.log"
@@ -187,6 +203,13 @@ cat >"$H/.pi/agent/sessions/--fake--/2026-01-01T00-00-00-000Z_$PI.jsonl" <<JSON
 {"type":"message","message":{"role":"system","content":[{"type":"text","text":"system"}]}}
 {"type":"message","message":{"role":"user","content":[{"type":"text","text":"## **pi** first [prompt](https://x.example)"}]}}
 JSON
+mkdir -p "$H/.local/share/amp/threads" "$H/.gemini/tmp/proj/chats"
+printf '{"v":1,"id":"%s","title":"Amp thread title","messages":[]}\n' "$AMP" >"$H/.local/share/amp/threads/$AMP.json"
+cat >"$H/.gemini/tmp/proj/chats/session-2026-01-01T00-00-$(printf %.8s "$GEMINI").jsonl" <<JSON
+{"sessionId":"$GEMINI","projectHash":"x","startTime":"2026-01-01T00:00:00Z","kind":"main"}
+{"id":"1","timestamp":"2026-01-01T00:00:01Z","type":"info","content":"Signed in"}
+{"id":"2","timestamp":"2026-01-01T00:00:02Z","type":"user","content":[{"text":"gemini *first* prompt"}]}
+JSON
 sqlite3 "$H/.codex/state_5.sqlite" "create table threads(id text primary key, name text,
   first_user_message text, updated_at integer);
   insert into threads values('$CODEX', 'Codex named thread', 'first', strftime('%s', 'now') - 20 * 86400);"
@@ -196,11 +219,13 @@ expect "claude: a rename wins over its own titles" test "$(title_of "claude:$NEW
 expect "claude: else the first prompt a person typed" test "$(title_of "claude:$CLAUDE")" = "Fix the login bug | now"
 expect "codex: the thread's name and last activity" test "$(title_of "codex:$CODEX")" = "Codex named thread | 2w"
 expect "pi: its first prompt" test "$(title_of "pi:$PI")" = "pi first prompt | now"
+expect "gemini: its first prompt" test "$(title_of "gemini:$GEMINI")" = "gemini first prompt | now"
+expect "amp: the thread's title" test "$(title_of "amp:$AMP")" = "Amp thread title | now"
 expect "choices lists the saved chats" json --arg c "codex:$CODEX" --arg p "pi:$PI" --arg n "claude:$NEW_CLAUDE" \
   '[.[].key] | (index($c) != null) and (index($p) != null) and (index($n) != null)' "$T/choices.json"
-expect "choices lists chats only" json 'length == 6 and all(.[]; .agent != null and .session != null)' "$T/choices.json"
-# Three chats active now, codex 20 days ago, then two with no conversation file.
-expect "recently active chats come first" json --arg c "codex:$CODEX" '[.[].key] | index($c) == 3' "$T/choices.json"
+expect "choices lists chats only" json 'length == 10 and all(.[]; .agent != null and .session != null)' "$T/choices.json"
+# Five chats active now, codex 20 days ago, then four with no conversation file.
+expect "recently active chats come first" json --arg c "codex:$CODEX" '[.[].key] | index($c) == 5' "$T/choices.json"
 expect "a chat idle over two weeks starts unticked" \
   json --arg c "codex:$CODEX" 'all(.[]; .ticked == (.key != $c))' "$T/choices.json"
 # The chat that ran outside Rex left its tab an idle shell, and the saves since
@@ -236,6 +261,7 @@ took=$(($(date +%s) - up))
 expect "the watcher brought the chats back" grep -q 'Reopened [1-9]' "$T/watch.log"
 # launchd and systemd alone would restart the watcher only after 10 s.
 expect "within 6 s of the server (took ${took}s)" test "$took" -le 6
+expect "the log says the server stopped" grep -q "the Rex server stopped; waiting for it to start again" "$T/watch.log"
 sleep 3
 D mode=save
 listing=$(show)
@@ -244,9 +270,11 @@ expect "codex is back" has "^work 1\.2 agent codex $CODEX\$"
 expect "pi is back" has "^work 2\.1 agent pi $PI\$"
 expect "one copy of each claude" test "$(running "$T/bin/claude --resume $CLAUDE")" = 1
 stop_watcher
+expect "the log says why the watcher stopped" grep -q "rex-revive stopped: the login service was stopped" "$T/watch.log"
 
 echo "6. The command palette actions load"
-sed -e "s|@REX@|$REX|" -e "s|@SCRIPT@|$here/revive.lua|" "$here/integrations/rex_revive.lua" >"$T/rex_revive.lua"
+sed -e "s|@REX@|$REX|" -e "s|@SCRIPT@|$here/revive.lua|" -e "s|@LOG@|$T/palette.log|" \
+  "$here/integrations/rex_revive.lua" >"$T/rex_revive.lua"
 printf 'package.path = "%s/?.lua;" .. package.path\nrequire("rex_revive")\n' "$T" >"$T/check.lua"
 expect "rex config check passes" sh -c "'$REX' config check '$T/check.lua' >'$T/check.log' 2>&1"
 expect "it defines six actions" grep -q '^actions: 6$' "$T/check.log"
@@ -277,26 +305,48 @@ D mode=save
 SIDE=$(jq -r '[.panes[] | select(.session_label == "side")][0].session_id' "$(newest)")
 close_tab work 3
 sleep 1
-D mode=save
+D mode=save >"$T/close.log"
 close_tab work 2
 sleep 1
-D mode=save
+D mode=save >>"$T/close.log"
 expect "a save remembers the chats it lost, newest first" test "$(closed_keys)" = "pi:$PI claude:$CLAUDE"
+expect "and logs each" sh -c "grep -q 'closed claude:$CLAUDE (work' '$T/close.log' && grep -q 'closed pi:$PI (work' '$T/close.log'"
 D mode=closed | tail -1 >"$T/closed.json"
 expect "the closed chats have their titles" \
   json '[.[].title] == ["pi first prompt", "Fix the login bug"]' "$T/closed.json"
-D mode=reopen >"$T/reopen.log"
+D mode=reopen "log=$T/palette.log" >"$T/reopen.log"
 sleep 3
 D mode=save
 listing=$(show)
 expect "the newest closed chat is back, in a new tab of its session" has "^work [0-9]+\.1 agent pi $PI\$"
 expect "and out of the list" test "$(closed_keys)" = "claude:$CLAUDE"
+expect "log= appends to the log, as from the palette" grep -q "reopened pi:$PI in a new tab" "$T/palette.log"
 D mode=reopen "key=claude:$CLAUDE" "session=$SIDE" >>"$T/reopen.log"
 sleep 3
 D mode=save
 listing=$(show)
 expect "key= and session= pick the chat and the session" has "^side [0-9]+\.1 agent claude $CLAUDE\$"
 expect "one claude on that chat" test "$(running "$T/bin/claude --resume $CLAUDE")" = 1
+# An agent that quits leaves its tab an idle shell: the chat comes back there.
+pkill -f -x "$T/bin/codex resume $CODEX" || true
+sleep 1
+D mode=save >/dev/null
+D mode=reopen >>"$T/reopen.log"
+sleep 3
+D mode=save >/dev/null
+listing=$(show)
+expect "a chat whose agent quit comes back in its own tab" has "^work 1\.2 agent codex $CODEX\$"
+expect "and the log says so" grep -q "reopened codex:$CODEX in its tab" "$T/reopen.log"
+# A closed pane of a split comes back beside the pane it shared the tab with.
+R api call -s work block.close "{\"block_id\": \"$(block work 1 "$T/before.json" | sed -n 2p)\"}" >/dev/null
+sleep 1
+D mode=save >/dev/null
+D mode=reopen >>"$T/reopen.log"
+sleep 3
+D mode=save >/dev/null
+listing=$(show)
+expect "a closed pane comes back in its old place" grep -q "reopened codex:$CODEX in its old place" "$T/reopen.log"
+expect "on its side of the split" has "^work 1\.2 agent codex $CODEX\$"
 expect "with nothing closed, nothing opens" test "$(D mode=reopen | tail -1)" = "No closed chats to reopen."
 # A restart that can't bring a chat back leaves it closed: here its tab is gone.
 expect "before the restart, the chat in tab 6 is saved" has " agent claude $PAIR_B\$"

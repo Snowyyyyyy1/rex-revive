@@ -2,10 +2,10 @@
 [INPUT]: depends on rex.block and rex.sleep from the Rex Lua API; lib/util; lib/agents; lib/snapshot
 [OUTPUT]: exports restore: key(pane), id(pane), text(pane), plan(saved, live, running, opts) (pure);
           running(saved, opts) -> open chat set; pending(saved, opts) -> what a restore would bring back;
-          run(saved, opts) -> { agents, programs, reopened }; open(chat, session_id) -> a new tab
+          run(saved, opts) -> { agents, programs, reopened }; open(chat, session_id) -> a new pane
 [POS]: the writer side of rex-revive, and the only module that types into terminals.
        plan decides; run collects, plans, types, and tries again while restored tabs settle;
-       open starts a closed chat in a new tab, which needs no plan.
+       open starts a closed chat in a new pane or tab, which needs no plan.
 [PROTOCOL]: Update this header on change, then check CLAUDE.md
 ]]
 
@@ -181,14 +181,25 @@ function restore.run(saved, opts)
   return result
 end
 
--- Starts a chat in a new tab of a session, in the chat's folder: a closed
--- chat has no tab left to type into. Returns the new tab, or nil and an error.
--- A script must attach to a session before it adds a window there.
+-- Starts a closed chat in a new pane of a session, in the chat's folder: in
+-- its old place beside the pane it shared a tab with (chat.place, from
+-- snapshot.collect), when that pane is still there in this session, else in a
+-- new tab. Returns Rex's answer and "split" or "tab", or nil and an error.
+-- A script must attach to a session before it adds a pane there.
 function restore.open(chat, session_id)
   local attached, err = rex.call("session.attach", { session_id = session_id })
   if not attached then return nil, err end
-  return rex.call("session.new_window", { session_id = session_id, layout = { block = {
-    flavor = snapshot.TERMINAL .. ".shell", options = { cwd = chat.cwd, initial_input = restore.text(chat) } } } })
+  local layout = { block = { flavor = snapshot.TERMINAL .. ".shell",
+                             options = { cwd = chat.cwd, initial_input = restore.text(chat) } } }
+  local place = chat.place
+  if type(place) == "table" and place.anchor and chat.session_id == session_id then
+    local split = rex.call("session.new_split", { session_id = session_id, anchor_id = place.anchor,
+      direction = place.direction, side = place.side, ratio = place.ratio, layout = layout, focus = true })
+    if split then return split, "split" end
+  end
+  local tab, terr = rex.call("session.new_window", { session_id = session_id, layout = layout })
+  if not tab then return nil, terr end
+  return tab, "tab"
 end
 
 return restore

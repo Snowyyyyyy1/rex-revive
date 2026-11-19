@@ -10,9 +10,13 @@ Sets up the sessions test/e2e.sh works with, on its throwaway Rex server only:
         tab 5  an idle shell
         tab 6  claude | claude                       (two new chats in one folder)
   side  tab 1  pi (new)
+  more  tab 1  gemini (new; its hook records it)
+        tab 2  droid (new; its hook records it)
+        tab 3  amp (new; its plugin records it)
+        tab 4  cursor-agent (new; found by the chat store it holds)
 
 [INPUT]: depends on session.create from the Rex server API
-[OUTPUT]: the two sessions above; returns "ok"
+[OUTPUT]: the three sessions above; returns "ok"
 [POS]: the scene of test/e2e.sh, which checks what rex-revive saves and brings back.
 [PROTOCOL]: Update this header on change, then check CLAUDE.md
 ]]
@@ -38,4 +42,8 @@ assert(rex.call("session.create", { label = "work", initial_windows = {
   { layout = split(tab(claude), tab(claude)) },
 } }))
 assert(rex.call("session.create", { label = "side", initial_windows = { { layout = tab(pi) } } }))
+assert(rex.call("session.create", { label = "more", initial_windows = {
+  { layout = tab(q(a.bin .. "/gemini")) }, { layout = tab(q(a.bin .. "/droid")) }, { layout = tab(q(a.bin .. "/amp")) },
+  { layout = tab(q(a.bin .. "/cursor-agent")) },
+} }))
 return "ok"

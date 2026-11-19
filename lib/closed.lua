@@ -1,7 +1,7 @@
 --[[
 [INPUT]: depends on lib/util (JSON files, times); lib/restore (key)
 [OUTPUT]: exports closed: KEEP, diff(before, after) and merge(list, gone, back, now) (pure);
-          update(path, gone, back) and list(path) on closed.json
+          update(path, gone, back) -> the entries it added, and list(path), on closed.json
 [POS]: the memory of closed chats. A chat is closed when a save no longer has it: its tab
        was closed, or its agent quit, or a restart left it closed. revive.lua feeds it on
        every save and after a restart; mode=closed and mode=reopen read it.
@@ -17,7 +17,9 @@ local closed = {}
 closed.KEEP = 20  -- closed chats remembered, newest first
 
 -- The saved fields that reopen a chat and tell whether it runs.
-local FIELDS = { "kind", "agent", "session", "options", "exe", "file", "cwd", "session_id", "session_label" }
+-- block_id: its tab, if the agent quit there; place: beside what, if the tab was closed.
+local FIELDS = { "kind", "agent", "session", "options", "exe", "file", "cwd", "session_id", "session_label",
+                 "block_id", "place" }
 
 -- The chats of before that after lacks, as panes, and the keys of the chats in after.
 function closed.diff(before, after)
@@ -35,7 +37,8 @@ function closed.diff(before, after)
 end
 
 -- The list with the gone chats in front and the chats in back taken out, at most KEEP.
--- A chat closed again moves to the front. Returns the new list and whether it changed.
+-- A chat closed again moves to the front. Returns the new list, whether it
+-- changed, and how many entries at its front are new.
 function closed.merge(list, gone, back, now)
   local out, seen, changed = {}, {}, false
   for _, p in ipairs(gone) do
@@ -48,6 +51,7 @@ function closed.merge(list, gone, back, now)
       changed = true
     end
   end
+  local added = #out
   for _, entry in ipairs(list) do
     if seen[entry.key] or back[entry.key] or #out == closed.KEEP then
       changed = true
@@ -56,7 +60,7 @@ function closed.merge(list, gone, back, now)
       out[#out + 1] = entry
     end
   end
-  return out, changed
+  return out, changed, added
 end
 
 function closed.list(path)
@@ -64,10 +68,12 @@ function closed.list(path)
   return type(list) == "table" and list or {}
 end
 
--- Adds the gone chats and drops the chats in back (a set of keys); writes only on a change.
+-- Adds the gone chats and drops the chats in back (a set of keys); writes only
+-- on a change. Returns the entries it added.
 function closed.update(path, gone, back)
-  local list, changed = closed.merge(closed.list(path), gone, back or {}, util.now_iso())
+  local list, changed, added = closed.merge(closed.list(path), gone, back or {}, util.now_iso())
   if changed then util.write_json(path, list) end
+  return { unpack(list, 1, added) }
 end
 
 return closed

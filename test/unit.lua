@@ -115,6 +115,53 @@ check("codex resume command", agents.command({ agent = "codex", session = ID, ex
 check("pi resume command", agents.command({ agent = "pi", session = ID, options = { "--thinking", "high" } }),
   { "pi", "--thinking", "high", "--session", ID })
 
+-- Gemini CLI, Droid, amp
+local THREAD = "T-" .. ID
+check("gemini runs as node", agents.match({ name = "node", script = "/g/@google/gemini-cli/bundle/gemini.js" }), "gemini")
+check("valid: UUIDs by default, T-<uuid> for amp",
+  { agents.valid("gemini", ID), agents.valid("gemini", THREAD), agents.valid("amp", THREAD), agents.valid("amp", ID),
+    agents.valid("nobody", ID) }, { true, false, true, false, false })
+local gemini_rec = "/h/.gemini/rex-revive/51.json"
+check("gemini by its hook's record", agents.identify({ pid = 51, name = "node", argv0 = "node",
+  script = "/g/bundle/gemini.js" }, info(51, "node /g/bundle/gemini.js --approval-mode yolo -s"),
+  { home = "/h", reader = record_at(gemini_rec, { pid = 51, sessionId = ID, startedAt = (NOW - 60) * 1000 }) }),
+  { agent = "gemini", session = ID, options = { "--approval-mode", "yolo", "-s" }, exe = "gemini" })
+check("droid by -r on its command line", agents.identify({ pid = 52, argv0 = "droid" },
+  info(52, "droid -r " .. ID2), { home = "/h", reader = record_at("", nil) }).session, ID2)
+local amp_rec = "/h/.local/share/amp/rex-revive/53.json"
+check("amp by its plugin's record", agents.identify({ pid = 53, argv0 = "amp" }, info(53, "amp -m high"),
+  { home = "/h", reader = record_at(amp_rec, { pid = 53, sessionId = THREAD, startedAt = (NOW - 60) * 1000 }) }),
+  { agent = "amp", session = THREAD, options = { "-m", "high" }, exe = "amp" })
+check("amp's record must name a thread", agents.identify({ pid = 53, argv0 = "amp" }, info(53, "amp"),
+  { home = "/h", reader = record_at(amp_rec, { pid = 53, sessionId = ID, startedAt = (NOW - 60) * 1000 }) }).session, nil)
+check("amp by threads continue, a thread URL too", {
+  agents.identify({ pid = 53, argv0 = "amp" }, info(53, "amp threads continue -m high " .. THREAD),
+    { home = "/h", reader = record_at("", nil) }).session,
+  agents.identify({ pid = 53, argv0 = "amp" }, info(53, "amp threads continue https://ampcode.com/threads/" .. THREAD),
+    { home = "/h", reader = record_at("", nil) }).session }, { THREAD, THREAD })
+check("gemini resume command", agents.command({ agent = "gemini", session = ID, options = { "-m", "pro" } }),
+  { "gemini", "-m", "pro", "--resume", ID })
+check("droid resume command", agents.command({ agent = "droid", session = ID }), { "droid", "--resume", ID })
+check("amp resume command", agents.command({ agent = "amp", session = THREAD, options = { "-m", "high" } }),
+  { "amp", "threads", "continue", "-m", "high", THREAD })
+
+-- Cursor Agent
+check("cursor-agent runs as node, by either link or its script", {
+  agents.match({ name = "node", argv0 = "/u/.local/bin/agent" }),
+  agents.match({ name = "node", argv0 = "cursor-agent" }),
+  agents.match({ name = "node", script = "/u/.local/share/cursor-agent/versions/1/index.js" }) },
+  { "cursor-agent", "cursor-agent", "cursor-agent" })
+local store = "/h/.cursor/chats/0123456789abcdef0123456789abcdef/" .. ID .. "/store.db"
+check("cursor-agent by the chat store it holds, no secret options kept", agents.identify(
+  { pid = 54, name = "node", argv0 = "agent" },
+  info(54, "agent --use-system-ca /c/index.js --model gpt-5 -f --api-key k", { store .. "-wal", store }),
+  { home = "/h" }),
+  { agent = "cursor-agent", session = ID, options = { "--model", "gpt-5", "-f" }, exe = "cursor-agent", file = store })
+check("cursor-agent by --resume on its command line", agents.identify({ pid = 54, argv0 = "cursor-agent" },
+  info(54, "cursor-agent --resume=" .. ID2, {}), { home = "/h" }).session, ID2)
+check("cursor-agent resume command", agents.command({ agent = "cursor-agent", session = ID, options = { "--trust" } }),
+  { "cursor-agent", "--trust", "--resume", ID })
+
 ---------------------------------------------------------------------------
 -- snapshot: what a tab runs
 
@@ -227,7 +274,8 @@ check("closed.diff: the chats a save lost, and the chats it has",
 check("closed.diff: no earlier save, nothing lost", #closed.diff(nil, { panes = { claude } }), 0)
 local list, changed = closed.merge({}, { claude, pi }, {}, "t1")
 check("closed.merge: what reopening needs, newest first", { changed, list[1].key, list[2].key, list[2].cwd,
-  list[2].closed_at, list[2].block_id }, { true, "claude:" .. ID, "pi:" .. ID2, "/q", "t1" })
+  list[2].closed_at, list[2].block_id }, { true, "claude:" .. ID, "pi:" .. ID2, "/q", "t1", "b2" })
+check("closed.merge: counts the new entries in front", select(3, closed.merge(list, { pi }, {}, "t2")), 1)
 list = closed.merge(list, { pi }, {}, "t2")
 check("closed.merge: closed again moves to the front", { #list, list[1].key, list[1].closed_at }, { 2, "pi:" .. ID2, "t2" })
 list, changed = closed.merge(list, {}, { ["pi:" .. ID2] = true }, "t3")

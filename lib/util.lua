@@ -34,7 +34,20 @@ end
 function util.iso(t) return os.date("!%Y-%m-%dT%H:%M:%SZ", t) end
 function util.now_iso() return util.iso(os.time()) end
 
-function util.log(message) print(os.date("%Y-%m-%d %H:%M:%S") .. " " .. message) end
+-- A timestamped line on stdout, and appended to util.log_file when a run sets
+-- it: a run started from the command palette has no stdout anyone reads.
+util.log_file = nil
+function util.log(message)
+  local line = os.date("%Y-%m-%d %H:%M:%S") .. " " .. message
+  print(line)
+  if util.log_file then
+    local f = io.open(util.log_file, "a")
+    if f then
+      f:write(line, "\n")
+      f:close()
+    end
+  end
+end
 
 ---------------------------------------------------------------------------
 -- Commands

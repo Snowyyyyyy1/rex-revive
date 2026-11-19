@@ -7,18 +7,21 @@
           a restart). The watcher also runs revive_choose with args.items after a restart, to ask in
           the Rex app.
 [POS]: the Rex config side of rex-revive. install.sh copies it to ~/.config/rex/rex_revive.lua and
-       fills in @REX@ and @SCRIPT@; init.lua loads it with require("rex_revive"). It only starts
+       fills in @REX@, @SCRIPT@, and @LOG@ (the watcher's log, empty without one); init.lua loads it with require("rex_revive"). It only starts
        revive.lua runs and asks questions; revive.lua does the work.
 [PROTOCOL]: Update this header on change, then check CLAUDE.md
 ]]
 
 local REX = "@REX@"
 local SCRIPT = "@SCRIPT@"
+local LOG = "@LOG@"
 local HOME = os.getenv("HOME") or ""
 local REOPEN_KEY = "shift+cmd+t"
 
 local function command(mode, extra)
   local argv = { REX, "--autostart=false", "do", SCRIPT, "mode=" .. mode, "palette=true" }
+  -- Its output goes nowhere, so it appends to the watcher's log.
+  if LOG ~= "" then argv[#argv + 1] = "log=" .. LOG end
   for _, word in ipairs(extra or {}) do argv[#argv + 1] = word end
   return argv
 end

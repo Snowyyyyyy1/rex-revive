@@ -76,15 +76,26 @@ function snapshot.describe(process, info, opts)
   return { kind = "program", cwd = top.cwd or outer.cwd, command = command_of(top, info) or top.name }
 end
 
--- The leaves of a tiled layout, in order: before before after.
-local function leaves(node, out)
+local function node_id(node)
+  return type(node) == "table" and (node.block_id or (node.split and node.split.split_id)) or nil
+end
+
+-- The leaves of a tiled layout, in order (before before after), each with its
+-- place: the side of its split it sits on, and the ID of that split's other
+-- side (a block or a split). When the leaf closes, its split gives way to that
+-- other side, which keeps its ID, so the leaf can come back beside it.
+local function leaves(node, out, place)
   out = out or {}
   if type(node) ~= "table" then return out end
-  if node.split then
-    leaves(node.split.before, out)
-    leaves(node.split.after, out)
+  local s = node.split
+  if s then
+    local function side(name, other)
+      return { anchor = node_id(other), direction = s.direction, side = name, ratio = s.ratio }
+    end
+    leaves(s.before, out, side("before", s.after))
+    leaves(s.after, out, side("after", s.before))
   elseif node.block_id then
-    out[#out + 1] = node.block_id
+    out[#out + 1] = { block_id = node.block_id, place = place }
   end
   return out
 end
@@ -108,7 +119,8 @@ function snapshot.collect(opts)
       end
       for _, layer in ipairs(util.list(w.layers)) do
         if layer.kind == "tiled" then
-          for pi, block_id in ipairs(leaves(layer.layout)) do
+          for pi, leaf in ipairs(leaves(layer.layout)) do
+            local block_id = leaf.block_id
             if terminals[block_id] then
               local process = rex.block.call(TERMINAL, "process",
                 { session_id = s.session_id, block_id = block_id }) or {}
@@ -119,7 +131,7 @@ function snapshot.collect(opts)
               found[#found + 1] = {
                 process = process,
                 pane = { session_id = s.session_id, session_label = s.label, window_id = w.window_id,
-                         window_index = wi, pane_index = pi, block_id = block_id },
+                         window_index = wi, pane_index = pi, block_id = block_id, place = leaf.place },
               }
             end
           end

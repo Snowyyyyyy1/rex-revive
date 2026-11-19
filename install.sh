@@ -4,26 +4,33 @@
 #   ./install.sh                  copy the files and start the watcher as a login service
 #   ./install.sh --add-to-config  also load the command palette actions from Rex's init.lua
 #   ./install.sh --pi             also install the pi extension that records pi's session
+#   ./install.sh --gemini         also add the SessionStart hook that records Gemini CLI's session (needs jq)
+#   ./install.sh --droid          also add the SessionStart hook that records Droid's session (needs jq)
+#   ./install.sh --amp            also install the amp plugin that records amp's thread
 #   ./install.sh --no-service     copy the files only
 #   REX=/path/to/rex ./install.sh use this rex command
 #
 # Remove it with ./uninstall.sh.
 #
 # [INPUT]: depends on revive.lua, lib/, service.sh, integrations/ of this repository; launchd or systemd
-# [OUTPUT]: the installed app, a login service, ~/.config/rex/rex_revive.lua, and with --pi the pi extension
+# [OUTPUT]: the installed app, a login service, ~/.config/rex/rex_revive.lua, and with --pi, --gemini,
+#           --droid, --amp what records each agent's session (each kept up to date once installed)
 # [POS]: the only installer; uninstall.sh undoes each step it takes.
 # [PROTOCOL]: Update this header on change, then check CLAUDE.md
 set -eu
 
 [ -n "${HOME:-}" ] && [ -d "$HOME" ] || { echo "install.sh: HOME is not a folder" >&2; exit 1; }
 here=$(cd "$(dirname "$0")" && pwd)
-add_to_config=0 service=1 pi=0
+add_to_config=0 service=1 pi=0 gemini=0 droid=0 amp=0
 for arg in "$@"; do
   case "$arg" in
     --add-to-config) add_to_config=1 ;;
     --no-service) service=0 ;;
     --pi) pi=1 ;;
-    -h|--help) sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    --gemini) gemini=1 ;;
+    --droid) droid=1 ;;
+    --amp) amp=1 ;;
+    -h|--help) sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "install.sh: unknown option $arg" >&2; exit 2 ;;
   esac
 done
@@ -56,11 +63,12 @@ cp "$here"/lib/*.lua "$app/lib.new/"
 rm -rf "$app/lib" && mv "$app/lib.new" "$app/lib"
 cp "$here/revive.lua" "$script.new" && mv "$script.new" "$script"
 cp "$here/service.sh" "$app/service.sh.new" && chmod +x "$app/service.sh.new" && mv "$app/service.sh.new" "$app/service.sh"
+cp "$here/integrations/agent-hook.sh" "$app/agent-hook.sh.new" && mv "$app/agent-hook.sh.new" "$app/agent-hook.sh"
 say "Installed $script"
 
 # The service's PATH: where the agents and lsof live.
 path="/usr/bin:/bin:/usr/sbin:/sbin"
-for tool in claude codex pi lsof; do
+for tool in claude codex pi gemini droid amp cursor-agent lsof; do
   where=$(command -v "$tool" 2>/dev/null || true)
   case "$where" in /*) dir=$(dirname "$where"); case ":$path:" in *":$dir:"*) ;; *) path="$dir:$path" ;; esac ;; esac
 done
@@ -134,11 +142,42 @@ if [ "$pi" = 1 ] || [ -f "$pi_extension" ]; then
   say "Installed the pi extension $pi_extension (pi chats started from now on use it)"
 fi
 
+# Gemini CLI and Droid run a SessionStart hook from their settings.json; this adds
+# agent-hook.sh as one, after a one-time backup, and keeps it at this install's path.
+hooked() { [ -f "$1" ] && grep -q 'rex-revive.*agent-hook\.sh' "$1"; }
+add_hook() {  # settings.json, agent
+  file=$1 agent=$2 command="sh '$app/agent-hook.sh' $2"
+  command -v jq >/dev/null 2>&1 ||
+    fail "--$agent needs jq to edit $file. Install jq, or add this SessionStart command hook yourself: $command"
+  mkdir -p "$(dirname "$file")"
+  [ -f "$file" ] || printf '{}\n' >"$file"
+  [ -f "$file.rex-revive-backup" ] || cp "$file" "$file.rex-revive-backup"
+  jq --arg c "$command" '.hooks.SessionStart =
+      [(.hooks.SessionStart // [])[] | select(any(.hooks[]?; (.command // "") | test("rex-revive.*agent-hook\\.sh")) | not)]
+      + [{hooks: [{type: "command", command: $c}]}]' "$file" >"$file.rex-revive-new"
+  # Written through, not moved: settings.json is often a link into a dotfiles folder.
+  cat "$file.rex-revive-new" >"$file" && rm -f "$file.rex-revive-new"
+  say "Added the $agent SessionStart hook to $file (backup: $file.rex-revive-backup)"
+}
+gemini_settings="$HOME/.gemini/settings.json"
+droid_settings="$HOME/.factory/settings.json"
+if [ "$gemini" = 1 ] || hooked "$gemini_settings"; then add_hook "$gemini_settings" gemini; fi
+if [ "$droid" = 1 ] || hooked "$droid_settings"; then add_hook "$droid_settings" droid; fi
+
+# amp loads every plugin in ~/.config/amp/plugins.
+amp_plugin="${XDG_CONFIG_HOME:-$HOME/.config}/amp/plugins/rex-revive.ts"
+if [ "$amp" = 1 ] || [ -f "$amp_plugin" ]; then
+  mkdir -p "$(dirname "$amp_plugin")"
+  cp "$here/integrations/amp-rex-revive.ts" "$amp_plugin"
+  say "Installed the amp plugin $amp_plugin (amp threads started from now on use it)"
+fi
+
 # Command palette actions, with this install's paths filled in.
 lua_string() { printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'; }
 sed_text() { printf '%s' "$1" | sed -e 's/[&|\\]/\\&/g'; }
 mkdir -p "$config"
 sed -e "s|@REX@|$(sed_text "$(lua_string "$rex")")|" -e "s|@SCRIPT@|$(sed_text "$(lua_string "$script")")|" \
+  -e "s|@LOG@|$(sed_text "$(lua_string "$log")")|" \
   "$here/integrations/rex_revive.lua" >"$config/rex_revive.lua"
 say "Installed the command palette actions in $config/rex_revive.lua"
 init="$config/init.lua"

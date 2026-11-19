@@ -1,5 +1,5 @@
 --[[
-[INPUT]: depends on lib/util (command output, directory listing, home); lib/agents (is_uuid); rex.json;
+[INPUT]: depends on lib/util (command output, directory listing, home, JSON files); lib/agents (valid); rex.json;
          find, stat, and for Codex sqlite3, on the PATH
 [OUTPUT]: exports titles: label(chats, opts) fills in each chat's title, idle, and ago;
           clip(text, n) and ago(seconds), the formatting both use
@@ -41,11 +41,12 @@ function titles.ago(seconds)
 end
 
 -- What a person typed, from a message's content: a string, or a list whose
--- first part is text. Tool results and wrappers such as <command-name> are not.
+-- first part is text ({type = "text", text} or Gemini's {text}). Tool results
+-- and wrappers such as <command-name> are not.
 local function typed(content)
   if type(content) == "table" then
     local part = content[1]
-    content = type(part) == "table" and part.type == "text" and part.text
+    content = type(part) == "table" and (part.type == "text" or part.type == nil) and part.text
   end
   if type(content) ~= "string" or content:match("^%s*<") then return nil end
   -- A prompt is often Markdown: keep the words, drop the marks.
@@ -152,6 +153,40 @@ function READERS.pi(id, home)
   return title, modified(path)
 end
 
+-- ~/.gemini/tmp/<project>/chats/session-<time>-<first 8 of id>.jsonl, whose
+-- first line names the session. Gemini keeps no title: its first prompt.
+function READERS.gemini(id, home)
+  local out = util.stdout({ "find", home .. "/.gemini/tmp", "-maxdepth", "3", "-path", "*/chats/*",
+                            "-name", "session-*-" .. id:sub(1, 8) .. "*.jsonl" })
+  for path in out:gmatch("[^\n]+") do
+    local f = io.open(path, "r")
+    local first = f and f:read("*l")
+    if f then f:close() end
+    local ok, head = pcall(rex.json.decode, first or "")
+    if ok and type(head) == "table" and head.sessionId == id then
+      local title = first_prompt(path, '"type":"user"', function(e) return e.type == "user" and e.content end)
+      return title, modified(path)
+    end
+  end
+end
+
+-- ~/.local/share/amp/threads/T-<uuid>.json: its title, else its first prompt.
+function READERS.amp(id, home)
+  local path = home .. "/.local/share/amp/threads/" .. id .. ".json"
+  local thread = util.read_json(path)
+  if type(thread) ~= "table" then return nil end
+  local title = titles.clip(thread.title, MAX_CHARS)
+  if not title then
+    for _, m in ipairs(util.list(thread.messages)) do
+      if type(m) == "table" and m.role == "user" then
+        title = typed(m.content)
+        if title then break end
+      end
+    end
+  end
+  return title, modified(path)
+end
+
 -- Fills in chat.title, chat.idle (seconds since it was last active) and
 -- chat.ago ("3h") where the files tell, for the chats among items such as
 -- restore.pending returns. opts.home and opts.now are for the tests.
@@ -160,7 +195,7 @@ function titles.label(chats, opts)
   local home, now = opts.home or util.home(), opts.now or os.time()
   for _, chat in ipairs(chats) do
     local read = READERS[chat.agent]
-    if read and agents.is_uuid(chat.session) then
+    if read and agents.valid(chat.agent, chat.session) then
       local ok, title, active = pcall(read, chat.session, home)
       if ok then
         chat.title = title

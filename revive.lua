@@ -12,7 +12,8 @@ the Rex server restarts.
   rex do revive.lua mode=settings [ask=false]   show the settings, or change them
   rex do revive.lua mode=version
 
-Common arguments: state_dir=DIR (where saves go), palette=true (also notify), notify=false.
+Common arguments: state_dir=DIR (where saves go), palette=true (also notify), notify=false,
+log=FILE (also append log lines to FILE: the palette passes the watcher's log).
 Watch arguments: rex=PATH (the rex command, to ask in the Rex app), ask=false (don't ask, whatever
 the settings say).
 
@@ -36,6 +37,7 @@ end
 package.path = root() .. "/lib/?.lua;" .. package.path
 
 local util = require("util")
+if type(args.log) == "string" and args.log ~= "" then util.log_file = args.log end
 local snapshot = require("snapshot")
 local restore = require("restore")
 local titles = require("titles")
@@ -67,9 +69,17 @@ local function notify(message)
   if args.notify ~= false then util.notify(message) end
 end
 
+-- A run's outcome: printed, logged when the run has a log file, and from the palette also notified.
 local function tell(message)
-  print(message)
+  if util.log_file then util.log(message) else print(message) end
   if args.palette == true then notify(message) end
+end
+
+-- Remembers the gone chats as closed, forgets the keys in back, and logs each newly closed chat.
+local function remember(gone, back, why)
+  for _, chat in ipairs(closed.update(CLOSED_FILE, gone, back)) do
+    util.log(string.format("closed %s (%s, %s): %s", chat.key, tostring(chat.session_label), tostring(chat.cwd), why))
+  end
 end
 
 -- only=claude:ID,pi:ID -> { ["claude:ID"] = true, ... }
@@ -83,7 +93,8 @@ end
 -- A chat the last save had and this one hasn't is closed; one back in a tab isn't.
 local function save()
   local snap, before = snapshot.save(SNAPS, snapshot.collect())
-  closed.update(CLOSED_FILE, closed.diff(before, snap))
+  local gone, present = closed.diff(before, snap)
+  remember(gone, present, "its tab closed or its agent quit")
   if args.verbose == true or args.palette == true then tell("Saved " .. snapshot.summary(snap) .. ".") end
   return snap
 end
@@ -203,7 +214,7 @@ local function startup()
     local key = restore.key(p)
     if key and waiting[key] and not result.reopened[key] then gone[#gone + 1] = p end
   end
-  closed.update(CLOSED_FILE, gone)
+  remember(gone, {}, "not brought back after the restart")
   state.last_restore = { at = util.now_iso(), from = saved.saved_at, instance = status.instance_id,
                          agents = result.agents, programs = result.programs }
   util.write_json(STATE_FILE, state)
@@ -265,8 +276,23 @@ local function first_session()
   return first and first.session_id
 end
 
--- A closed chat (key=, else the newest) in a new tab: in session= (the app's
--- current one), else in the chat's own session, else in the first one.
+-- Types a closed chat back into its own tab, when its agent quit there and
+-- the tab is an idle shell again. Returns whether it did.
+local function reopen_in_tab(chat)
+  if not chat.block_id then return false end
+  for _, p in ipairs(snapshot.collect().panes) do
+    if p.block_id == chat.block_id then
+      if p.kind ~= "shell" or restore.run({ panes = { chat } }, { tries = 1 }).agents ~= 1 then return false end
+      rex.session.focus_block{ session_id = p.session_id, block_id = p.block_id }
+      return true
+    end
+  end
+  return false
+end
+
+-- A closed chat (key=, else the newest), in the session the person is in
+-- (session=, else the chat's own, else the first one): in its own tab if that
+-- is an idle shell, else in its old place beside its neighbour pane, else in a new tab.
 local function reopen_mode()
   local chat
   for _, c in ipairs(closed_chats()) do
@@ -276,17 +302,20 @@ local function reopen_mode()
     end
   end
   if not chat then return tell("No closed chats to reopen.") end
-  local tab, err
+  local how, err
+  if (not args.session or args.session == chat.session_id) and reopen_in_tab(chat) then how = "its tab" end
   local function try(session_id)
-    if not tab and type(session_id) == "string" and session_id ~= "" then tab, err = restore.open(chat, session_id) end
+    if how or type(session_id) ~= "string" or session_id == "" then return end
+    local opened, kind = restore.open(chat, session_id)
+    if opened then how = kind == "split" and "its old place" or "a new tab" else err = kind end
   end
   try(args.session)
   try(chat.session_id)
-  if not tab then try(first_session()) end
-  if not tab then return tell("Couldn't open a tab for " .. chat.key .. ": " .. tostring(err)) end
+  if not how then try(first_session()) end
+  if not how then return tell("Couldn't reopen " .. chat.key .. ": " .. tostring(err)) end
   -- Out of the list now, so a second press reopens the next one.
   closed.update(CLOSED_FILE, {}, { [chat.key] = true })
-  print("Reopened " .. chat.key .. " in a new tab.")
+  util.log("reopened " .. chat.key .. " in " .. how)
 end
 
 -- Save after each change and on a timer; restore when the server is new.
