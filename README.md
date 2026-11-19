@@ -30,21 +30,25 @@ Without `--add-to-config` and the `require` line, the question after a restart c
 
 The installer copies rex-revive to `~/Library/Application Support/rex-revive/app` (macOS) or `~/.local/share/rex-revive` (Linux) and starts it as a login service: a launchd agent, or a systemd user service. Run `./install.sh` again to update.
 
-Requirements: Rex with a recent Lua API (control API revision 17 or later for **Choose Chats to Reopen…**), and `lsof`.
+Requirements: Rex with a recent Lua API (control API revision 17 or later for the questions, such as **Choose Chats to Reopen…**), and `lsof`.
 
 ## Using it
 
 There is nothing to do day to day. rex-revive saves what runs in each tab a few seconds after any change, and at least once a minute.
 
-When the Rex server starts again, the Rex app asks **Rex restarted · Reopen chats**, with every saved chat ticked. Each row shows the chat's title and how long ago it was active. Untick what you don't want, then press **⌘↩** or click **Reopen**. If you close the question, or don't answer within a minute, or no Rex app is open, every chat comes back, and a notification such as "Reopened 6 chats." says so. Rex has no way for a script to show a notice inside the app, so that notification is the system's.
+When the Rex server starts again, the Rex app asks **Rex restarted · Reopen chats**. Each row shows the chat's title and how long ago it was active, the most recently active first. Every chat is ticked, except one idle for more than two weeks. Other programs, such as `npm run dev`, are listed after the chats, marked "typed, not run": they come back typed at the prompt, waiting for Return. Untick what you don't want, then press **⌘↩** or click **Reopen**. If you close the question, or don't answer within a minute, or no Rex app is open, everything comes back, and a notification such as "Reopened 6 chats." says so. Rex has no way for a script to show a notice inside the app, so that notification is the system's. With no chats to reopen, there is no question: programs come back on their own.
 
 To reopen every chat without being asked, choose **Choose What Happens After a Restart…** in the command palette, or run `rex do "$S" mode=settings ask=false` (see below). The setting stays through updates.
 
 **Titles.** Claude Code: your rename (`/rename`), else Claude's own title, else your first prompt. Codex: the thread's name, else your first prompt; this needs `sqlite3`, which macOS has. pi keeps no title, so it's your first prompt.
 
+**Closed chats.** Close a tab with a chat in it, or quit the agent, and rex-revive remembers the chat: the last 20, newest first. So does a chat you leave unticked after a restart. Press **⇧⌘T** to reopen the chat closed last in a new tab of the session you're in, in the chat's folder. Press it again for the one before. Rex has no default for ⇧⌘T, and rex-revive binds it only when your `init.lua` doesn't bind it before `require("rex_revive")`. To give the key back, add `rex.unbind("shift+cmd+t", "revive_reopen_last")` after that line.
+
 From the command palette (search for "revive"):
 
-- **Choose Chats to Reopen…** lists the saved chats that aren't open, all ticked, and reopens the ones you keep ticked.
+- **Choose Chats to Reopen…** lists the saved chats that aren't open, recent ones ticked, and reopens the ones you tick.
+- **Reopen a Closed Chat…** lists the closed chats and reopens the one you pick in a new tab.
+- **Reopen the Last Closed Chat** (⇧⌘T) reopens the chat closed last.
 - **Reopen Chats and Programs in Their Tabs** brings back everything at once.
 - **Save Open Chats and Programs Now** saves right away.
 - **Choose What Happens After a Restart…** asks which chats to reopen after a restart, or reopens them all.
@@ -61,6 +65,9 @@ rex do "$S" mode=restore                     # bring back what isn't running
 rex do "$S" mode=restore only=claude:ID      # bring back just these chats (agent:id, comma separated)
 rex do "$S" mode=restore programs=false      # chats only, no other programs
 rex do "$S" mode=choices                     # the chats a restore would bring back, as JSON
+rex do "$S" mode=closed                      # the closed chats, newest first, as JSON
+rex do "$S" mode=reopen                      # the chat closed last, in a new tab (key=agent:ID for another,
+                                             #   session=ID for the session; else the chat's own)
 rex do "$S" mode=settings ask=false          # reopen every chat after a restart, without asking (ask=true: ask again)
 ```
 

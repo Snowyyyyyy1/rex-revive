@@ -3,7 +3,7 @@ Unit tests for lib/. They only read, and need no Rex sessions:
 
   rex do test/unit.lua root="$PWD"     (test/e2e.sh runs them too)
 
-[INPUT]: depends on lib/proc, lib/agents, lib/snapshot, lib/restore, lib/titles of the repository at root=
+[INPUT]: depends on lib/proc, lib/agents, lib/snapshot, lib/restore, lib/titles, lib/closed of the repository at root=
 [OUTPUT]: prints each failure and "N passed, M failed"; raises when any failed
 [POS]: the fast layer of test/. It covers every pure function; e2e.sh covers Rex itself.
 [PROTOCOL]: Update this header on change, then check CLAUDE.md
@@ -17,6 +17,7 @@ local agents = require("agents")
 local snapshot = require("snapshot")
 local restore = require("restore")
 local titles = require("titles")
+local closed = require("closed")
 
 local passed, failed = 0, 0
 local function show(v) return type(v) == "table" and rex.json.encode(v) or tostring(v) end
@@ -197,16 +198,46 @@ check("plan: one chat saved in two tabs opens once", #restore.plan(twice, idle, 
 check("plan: leave= keeps those chats closed, programs still typed", texts(restore.plan(saved, idle, {},
   { leave = { ["claude:" .. ID] = true }, dir_exists = yes })),
   { "b2=cd /q && pi --session " .. ID2 .. "\n", "b3=npm run dev" })
+check("plan: leave= a program by its id", texts(restore.plan(saved, idle, {},
+  { leave = { ["program:b3"] = true }, dir_exists = yes, programs = true })),
+  { "b1=claude --resume " .. ID .. "\n", "b2=cd /q && pi --session " .. ID2 .. "\n" })
+check("id: a chat's key, a program's block, nothing for a shell",
+  { restore.id(saved.panes[1]), restore.id(saved.panes[3]), restore.id({ kind = "shell", block_id = "b9" }) },
+  { "claude:" .. ID, "program:b3" })
 local none_open = { home = "/nonexistent-rex-revive-home" }
-check("chats: the saved chats, once each, programs left out",
-  (function()
-    local out = {}
-    for _, c in ipairs(restore.chats({ panes = { twice.panes[1], twice.panes[2], saved.panes[2], saved.panes[3] } },
-                                     none_open)) do
-      out[#out + 1] = c.key .. " @ " .. c.where
-    end
-    return out
-  end)(), { "claude:" .. ID .. " @ work tab 1 pane 1", "pi:" .. ID2 .. " @ work tab 2 pane 1" })
+local function pending(opts)
+  local out = {}
+  local panes = { twice.panes[1], twice.panes[2], saved.panes[2], saved.panes[3] }
+  for _, c in ipairs(restore.pending({ panes = panes }, opts)) do
+    out[#out + 1] = c.key .. " " .. c.kind .. " @ " .. c.where
+  end
+  return out
+end
+check("pending: each chat once, then programs, in save order", pending(none_open), {
+  "claude:" .. ID .. " agent @ work tab 1 pane 1", "pi:" .. ID2 .. " agent @ work tab 2 pane 1",
+  "program:b3 program @ work tab 3 pane 1" })
+check("pending: programs=false leaves programs out",
+  #pending({ home = none_open.home, programs = false }), 2)
+
+-- closed
+local claude, pi = saved.panes[1], saved.panes[2]
+local gone, present = closed.diff({ panes = { claude, pi, saved.panes[3] } }, { panes = { claude } })
+check("closed.diff: the chats a save lost, and the chats it has",
+  { #gone, gone[1].session, present }, { 1, ID2, { ["claude:" .. ID] = true } })
+check("closed.diff: no earlier save, nothing lost", #closed.diff(nil, { panes = { claude } }), 0)
+local list, changed = closed.merge({}, { claude, pi }, {}, "t1")
+check("closed.merge: what reopening needs, newest first", { changed, list[1].key, list[2].key, list[2].cwd,
+  list[2].closed_at, list[2].block_id }, { true, "claude:" .. ID, "pi:" .. ID2, "/q", "t1" })
+list = closed.merge(list, { pi }, {}, "t2")
+check("closed.merge: closed again moves to the front", { #list, list[1].key, list[1].closed_at }, { 2, "pi:" .. ID2, "t2" })
+list, changed = closed.merge(list, {}, { ["pi:" .. ID2] = true }, "t3")
+check("closed.merge: back in a tab, out of the list", { changed, #list, list[1].key }, { true, 1, "claude:" .. ID })
+check("closed.merge: no change, no write", select(2, closed.merge(list, {}, { other = true }, "t4")), false)
+local many = {}
+for i = 1, closed.KEEP + 5 do
+  many[i] = { kind = "agent", agent = "claude", session = string.format("%08d-0000-4000-8000-000000000000", i) }
+end
+check("closed.merge: at most KEEP", #closed.merge({}, many, {}, "t5"), closed.KEEP)
 check("plan: quoting", restore.text({ kind = "agent", agent = "claude", session = ID, options = { "--add-dir", "my dir" } }),
   "claude --add-dir 'my dir' --resume " .. ID .. "\n")
 

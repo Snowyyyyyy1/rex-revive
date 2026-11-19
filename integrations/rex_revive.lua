@@ -1,9 +1,11 @@
 --[[
-[INPUT]: depends on rex.action, rex.exec, rex.ui.pick, rex.json from the Rex config Lua API;
-         runs revive.lua through the rex command
+[INPUT]: depends on rex.action, rex.bind, rex.bindings, rex.exec, rex.ui.pick, rex.json from the Rex
+         config Lua API; runs revive.lua through the rex command
 [OUTPUT]: command palette actions revive_choose (asks with rex.ui.pick), revive_restore, revive_save,
-          revive_settings (asks with rex.ui.pick whether to ask after a restart).
-          The watcher also runs revive_choose with args.chats after a restart, to ask in the Rex app.
+          revive_reopen_closed (asks with rex.ui.pick), revive_reopen_last (bound to ⇧⌘T unless this
+          config already binds that key), revive_settings (asks with rex.ui.pick whether to ask after
+          a restart). The watcher also runs revive_choose with args.items after a restart, to ask in
+          the Rex app.
 [POS]: the Rex config side of rex-revive. install.sh copies it to ~/.config/rex/rex_revive.lua and
        fills in @REX@ and @SCRIPT@; init.lua loads it with require("rex_revive"). It only starts
        revive.lua runs and asks questions; revive.lua does the work.
@@ -13,7 +15,7 @@
 local REX = "@REX@"
 local SCRIPT = "@SCRIPT@"
 local HOME = os.getenv("HOME") or ""
-local ICONS = { claude = "code", codex = "code", pi = "terminal" }
+local REOPEN_KEY = "shift+cmd+t"
 
 local function command(mode, extra)
   local argv = { REX, "--autostart=false", "do", SCRIPT, "mode=" .. mode, "palette=true" }
@@ -41,44 +43,61 @@ local function short(path)
   return path
 end
 
--- Ask which chats to reopen, all ticked. chats: { key, agent, session, cwd, where,
--- and from lib/titles: title, ago }. A row reads the chat's title, else its folder.
--- Returns the chosen keys, or nil and why not (cancelled, timeout, busy, ...).
--- rex.ui.pick must run in the action's own body: no pcall around this.
-local function choose(chats, title, timeout)
-  if not (rex.ui and rex.ui.pick) then error("rex-revive: this Rex has no rex.ui; update Rex", 0) end
-  local items = {}
-  for _, c in ipairs(chats) do
-    local folder = short(c.cwd)
-    items[#items + 1] = {
-      id = c.key, icon = ICONS[c.agent], selected = true,
-      title = c.title or (folder:match("([^/]+)/*$") or folder),
-      subtitle = c.agent .. " · " .. folder .. " · " .. c.where,
-      detail = c.ago or tostring(c.session):sub(1, 8),
-    }
+-- One row of a pick. item: a chat { key, agent, session, cwd, where or session_label,
+-- and from lib/titles: title, ago } or a program { key, kind = "program", command, cwd, where }.
+-- In a multiple pick, item.ticked == false starts it unticked. A chat reads its title, else its folder.
+local function row(item, multiple)
+  local folder = short(item.cwd)
+  local selected = multiple and item.ticked ~= false or nil
+  if item.kind == "program" then
+    return { id = item.key, icon = "terminal", selected = selected, title = item.command,
+             subtitle = "typed, not run · " .. folder .. " · " .. tostring(item.where) }
   end
-  -- In a multiple pick Cmd+Return answers (Rex docs, Custom UI), which is easy to miss.
-  local keys, status, err = rex.ui.pick{ title = title, timeout = timeout,
-                                         placeholder = "Filter chats · ⌘↩ reopens the ticked ones",
-                                         items = items, multiple = true, confirm = "Reopen" }
+  return {
+    id = item.key, icon = "code", selected = selected,
+    title = item.title or (folder:match("([^/]+)/*$") or folder),
+    subtitle = item.agent .. " · " .. folder .. " · " .. tostring(item.where or item.session_label),
+    detail = item.ago or tostring(item.session):sub(1, 8),
+  }
+end
+
+-- rex.ui.pick: the answer, or nil and why not (cancelled, timeout, busy, ...).
+-- It must run in the action's own body: no pcall around this, or Rex answers "failed".
+local function pick(question)
+  if not (rex.ui and rex.ui.pick) then error("rex-revive: this Rex has no rex.ui; update Rex", 0) end
+  local answer, status, err = rex.ui.pick(question)
   if status == "failed" then error("rex-revive: " .. tostring(err), 0) end
+  return answer, status
+end
+
+-- Ask which items to reopen, each ticked as revive.lua says. Returns the chosen
+-- keys, or nil and why not.
+local function choose(items, title, timeout)
+  local rows = {}
+  for _, item in ipairs(items) do rows[#rows + 1] = row(item, true) end
+  -- In a multiple pick Cmd+Return answers (Rex docs, Custom UI), which is easy to miss.
+  local keys, status = pick{ title = title, timeout = timeout, placeholder = "Filter · ⌘↩ reopens the ticked ones",
+                             items = rows, multiple = true, confirm = "Reopen" }
   return type(keys) == "table" and keys or nil, status
 end
 
 -- From the palette: ask, then start a restore of the chosen chats.
--- From the watcher after a restart (args.chats set): ask, and answer with the
--- chosen keys. A closed question answers with no keys, and the watcher then
--- reopens every chat: an app can close a question that nobody saw.
+-- From the watcher after a restart (args.items set: chats and programs): ask,
+-- and answer with the chosen keys. A closed question answers with no keys, and
+-- the watcher then reopens everything: an app can close a question that nobody saw.
 rex.action{
   name = "revive_choose",
   title = "Choose Chats to Reopen…",
-  description = "Lists the saved chats that aren't open, all ticked, and reopens the ones you keep ticked.",
+  description = "Lists the saved chats that aren't open, recent ones ticked, and reopens the ones you tick.",
   category = "rex-revive",
   keywords = "revive restore resume reopen choose pick chats claude codex pi",
-  args = { chats = "array?", timeout = "number?" },
+  args = { items = "array?", timeout = "number?" },
   run = function(_, a)
-    if a.chats then
-      local keys, status = choose(a.chats, "Rex restarted · Reopen chats", a.timeout)
+    if a.items then
+      local programs = false
+      for _, item in ipairs(a.items) do programs = programs or item.kind == "program" end
+      local title = programs and "Rex restarted · Reopen chats and programs" or "Rex restarted · Reopen chats"
+      local keys, status = choose(a.items, title, a.timeout)
       return { keys = keys, status = status }
     end
     local chats = run_revive("choices")
@@ -107,6 +126,42 @@ rex.action{
   run = function() start("save") end,
 }
 
+-- A new tab goes into the session the app shows (ctx.session_id), when Rex says which.
+local function reopen(ctx, extra)
+  extra = extra or {}
+  if ctx and ctx.session_id then extra[#extra + 1] = "session=" .. ctx.session_id end
+  start("reopen", extra)
+end
+
+rex.action{
+  name = "revive_reopen_closed",
+  title = "Reopen a Closed Chat…",
+  description = "Lists the chats whose tab was closed or whose agent quit, newest first, and reopens one in a new tab.",
+  category = "rex-revive",
+  keywords = "revive reopen closed chat tab undo history resume claude codex pi",
+  run = function(ctx)
+    local chats = run_revive("closed")
+    if not chats or #chats == 0 then return end
+    local rows = {}
+    for _, chat in ipairs(chats) do rows[#rows + 1] = row(chat) end
+    local key = pick{ title = "Reopen a closed chat", placeholder = "Filter closed chats", items = rows }
+    if type(key) == "string" then reopen(ctx, { "key=" .. key }) end
+  end,
+}
+
+rex.action{
+  name = "revive_reopen_last",
+  title = "Reopen the Last Closed Chat",
+  description = "Reopens the chat closed most recently in a new tab. Press it again for the one before.",
+  category = "rex-revive",
+  keywords = "revive reopen last closed chat tab undo resume",
+  run = function(ctx) reopen(ctx) end,
+}
+
+-- Rex has no default for this key. Bound only when nothing before require("rex_revive")
+-- in init.lua binds it. To free it, put rex.unbind("shift+cmd+t", "revive_reopen_last") after.
+if #rex.bindings({ key = REOPEN_KEY }) == 0 then rex.bind(REOPEN_KEY, "revive_reopen_last") end
+
 rex.action{
   name = "revive_settings",
   title = "Choose What Happens After a Restart…",
@@ -116,8 +171,8 @@ rex.action{
   run = function()
     local ask = (run_revive("settings") or {}).ask ~= false
     local function now(on) return on and "Now" or nil end
-    local choice = rex.ui.pick{ title = "After Rex restarts", items = {
-      { id = "ask", title = "Ask which chats to reopen", subtitle = "Every saved chat ticked; ⌘↩ reopens",
+    local choice = pick{ title = "After Rex restarts", items = {
+      { id = "ask", title = "Ask which chats to reopen", subtitle = "Recent chats ticked; ⌘↩ reopens",
         icon = "gear", detail = now(ask) },
       { id = "all", title = "Reopen every chat without asking", subtitle = "A notification says how many",
         icon = "gear", detail = now(not ask) },

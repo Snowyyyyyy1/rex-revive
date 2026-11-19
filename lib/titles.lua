@@ -1,7 +1,7 @@
 --[[
 [INPUT]: depends on lib/util (command output, directory listing, home); lib/agents (is_uuid); rex.json;
          find, stat, and for Codex sqlite3, on the PATH
-[OUTPUT]: exports titles: label(chats, opts) fills in each chat's title and ago;
+[OUTPUT]: exports titles: label(chats, opts) fills in each chat's title, idle, and ago;
           clip(text, n) and ago(seconds), the formatting both use
 [POS]: the only module that reads the agents' conversation files. It runs only when a person is
        asked which chats to reopen, never on a save: Claude's files reach hundreds of megabytes.
@@ -152,8 +152,9 @@ function READERS.pi(id, home)
   return title, modified(path)
 end
 
--- Fills in chat.title and chat.ago ("3h") where the files tell, for chats
--- such as restore.chats returns. opts.home and opts.now are for the tests.
+-- Fills in chat.title, chat.idle (seconds since it was last active) and
+-- chat.ago ("3h") where the files tell, for the chats among items such as
+-- restore.pending returns. opts.home and opts.now are for the tests.
 function titles.label(chats, opts)
   opts = opts or {}
   local home, now = opts.home or util.home(), opts.now or os.time()
@@ -163,7 +164,8 @@ function titles.label(chats, opts)
       local ok, title, active = pcall(read, chat.session, home)
       if ok then
         chat.title = title
-        chat.ago = active and titles.ago(now - active)
+        chat.idle = active and now - active
+        chat.ago = chat.idle and titles.ago(chat.idle)
       end
     end
   end

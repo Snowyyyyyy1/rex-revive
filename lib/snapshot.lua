@@ -1,7 +1,7 @@
 --[[
 [INPUT]: depends on rex.call, rex.session, rex.block from the Rex Lua API; lib/util; lib/proc; lib/agents
 [OUTPUT]: exports snapshot: TERMINAL, chain(process), describe(process, info, opts) -> pane fields (pure);
-          collect(opts) -> snap; save(dir, snap); all(dir); previous(dir, instance); summary(snap)
+          collect(opts) -> snap; save(dir, snap) -> saved, before; all(dir); previous(dir, instance); summary(snap)
 [POS]: the reader side of rex-revive. It turns what Rex shows now into a snap, and keeps snaps on disk.
        restore.lua consumes both a saved snap and a fresh one. It never writes to a terminal.
 [PROTOCOL]: Update this header on change, then check CLAUDE.md
@@ -143,11 +143,13 @@ end
 ---------------------------------------------------------------------------
 -- Snaps on disk: <dir>/<server instance>.json, the newest KEEP of them
 
--- Only what is worth bringing back: idle shells are left out.
+-- Only what is worth bringing back: idle shells are left out. Returns what it
+-- saved and the save it replaced, of the same server instance (nil for a new one).
 function snapshot.save(dir, snap)
   local path = dir .. "/" .. snap.server.instance .. ".json"
+  local before = util.read_json(path)
   -- A new server instance adds a file: only then make the folder and prune.
-  local new = not util.exists(path)
+  local new = before == nil
   if new then util.mkdirs(dir) end
   local kept = {}
   for _, p in ipairs(snap.panes) do
@@ -161,7 +163,7 @@ function snapshot.save(dir, snap)
     local all = snapshot.all(dir)
     for i = KEEP + 1, #all do os.remove(all[i].path) end
   end
-  return out
+  return out, before
 end
 
 -- Every snap in dir, newest first.

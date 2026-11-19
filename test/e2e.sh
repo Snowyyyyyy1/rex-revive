@@ -189,16 +189,20 @@ cat >"$H/.pi/agent/sessions/--fake--/2026-01-01T00-00-00-000Z_$PI.jsonl" <<JSON
 JSON
 sqlite3 "$H/.codex/state_5.sqlite" "create table threads(id text primary key, name text,
   first_user_message text, updated_at integer);
-  insert into threads values('$CODEX', 'Codex named thread', 'first', strftime('%s', 'now') - 7200);"
+  insert into threads values('$CODEX', 'Codex named thread', 'first', strftime('%s', 'now') - 20 * 86400);"
 D mode=choices | tail -1 >"$T/choices.json"
 title_of() { jq -r --arg k "$1" '.[] | select(.key == $k) | "\(.title // "-") | \(.ago // "-")"' "$T/choices.json"; }
 expect "claude: a rename wins over its own titles" test "$(title_of "claude:$NEW_CLAUDE")" = "Renamed chat | now"
 expect "claude: else the first prompt a person typed" test "$(title_of "claude:$CLAUDE")" = "Fix the login bug | now"
-expect "codex: the thread's name and last activity" test "$(title_of "codex:$CODEX")" = "Codex named thread | 2h"
+expect "codex: the thread's name and last activity" test "$(title_of "codex:$CODEX")" = "Codex named thread | 2w"
 expect "pi: its first prompt" test "$(title_of "pi:$PI")" = "pi first prompt | now"
 expect "choices lists the saved chats" json --arg c "codex:$CODEX" --arg p "pi:$PI" --arg n "claude:$NEW_CLAUDE" \
   '[.[].key] | (index($c) != null) and (index($p) != null) and (index($n) != null)' "$T/choices.json"
 expect "choices lists chats only" json 'length == 6 and all(.[]; .agent != null and .session != null)' "$T/choices.json"
+# Three chats active now, codex 20 days ago, then two with no conversation file.
+expect "recently active chats come first" json --arg c "codex:$CODEX" '[.[].key] | index($c) == 3' "$T/choices.json"
+expect "a chat idle over two weeks starts unticked" \
+  json --arg c "codex:$CODEX" 'all(.[]; .ticked == (.key != $c))' "$T/choices.json"
 # The chat that ran outside Rex left its tab an idle shell, and the saves since
 # say so: it isn't brought into Rex, where it would run twice.
 expect "a chat that moved out of Rex isn't offered" \
@@ -245,7 +249,11 @@ echo "6. The command palette actions load"
 sed -e "s|@REX@|$REX|" -e "s|@SCRIPT@|$here/revive.lua|" "$here/integrations/rex_revive.lua" >"$T/rex_revive.lua"
 printf 'package.path = "%s/?.lua;" .. package.path\nrequire("rex_revive")\n' "$T" >"$T/check.lua"
 expect "rex config check passes" sh -c "'$REX' config check '$T/check.lua' >'$T/check.log' 2>&1"
-expect "it defines four actions" grep -q '^actions: 4$' "$T/check.log"
+expect "it defines six actions" grep -q '^actions: 6$' "$T/check.log"
+expect "it binds shift+cmd+t" grep -q '^bindings: 1$' "$T/check.log"
+printf 'rex.bind("shift+cmd+t", "pane.zoom")\n' | cat - "$T/check.lua" >"$T/check2.lua"
+"$REX" config check "$T/check2.lua" >"$T/check2.log" 2>&1 || true
+expect "but not over a binding of the person's" grep -q '^bindings: 1$' "$T/check2.log"
 
 echo "7. The setting to reopen every chat without asking"
 # Not D: D passes ask=false, which is the setting under test.
@@ -256,6 +264,47 @@ expect "ask=false is kept" test "$(settings)" = '{"ask":false}'
 expect "status shows it" sh -c "(cd / && HOME='$H' '$REX' --autostart=false -S '$SOCK' do '$here/revive.lua' 'state_dir=$T/saves' mode=status) | grep -q 'After a restart: reopen every chat'"
 settings ask=true >/dev/null
 expect "ask=true turns it back on" test "$(settings)" = '{"ask":true}'
+
+echo "8. Closed chats come back in a new tab"
+newest() { ls -t "$T/saves/snapshots"/*.json | head -1; }
+window_of() {   # the window of the tab that held a block in before.json
+  R api call -s "$1" session.view '{}' | jq -r --arg b "$(block "$1" "$2" "$T/before.json" | head -1)" \
+    '.windows[] | select([.layers[].blocks[]?.block_id] | index($b)) | .window_id'
+}
+close_tab() { R api call -s "$1" session.close_window "{\"window_id\": \"$(window_of "$1" "$2")\"}" >/dev/null; }
+closed_keys() { jq -r '[.[].key] | join(" ")' "$T/saves/closed.json"; }
+D mode=save
+SIDE=$(jq -r '[.panes[] | select(.session_label == "side")][0].session_id' "$(newest)")
+close_tab work 3
+sleep 1
+D mode=save
+close_tab work 2
+sleep 1
+D mode=save
+expect "a save remembers the chats it lost, newest first" test "$(closed_keys)" = "pi:$PI claude:$CLAUDE"
+D mode=closed | tail -1 >"$T/closed.json"
+expect "the closed chats have their titles" \
+  json '[.[].title] == ["pi first prompt", "Fix the login bug"]' "$T/closed.json"
+D mode=reopen >"$T/reopen.log"
+sleep 3
+D mode=save
+listing=$(show)
+expect "the newest closed chat is back, in a new tab of its session" has "^work [0-9]+\.1 agent pi $PI\$"
+expect "and out of the list" test "$(closed_keys)" = "claude:$CLAUDE"
+D mode=reopen "key=claude:$CLAUDE" "session=$SIDE" >>"$T/reopen.log"
+sleep 3
+D mode=save
+listing=$(show)
+expect "key= and session= pick the chat and the session" has "^side [0-9]+\.1 agent claude $CLAUDE\$"
+expect "one claude on that chat" test "$(running "$T/bin/claude --resume $CLAUDE")" = 1
+expect "with nothing closed, nothing opens" test "$(D mode=reopen | tail -1)" = "No closed chats to reopen."
+# A restart that can't bring a chat back leaves it closed: here its tab is gone.
+expect "before the restart, the chat in tab 6 is saved" has " agent claude $PAIR_B\$"
+stop_server
+start_server
+close_tab work 6
+D mode=startup >"$T/startup4.log"
+expect "a chat whose tab is gone after a restart is closed" grep -q "claude:$PAIR_B" "$T/saves/closed.json"
 
 echo
 echo "$passed passed, $failed failed"

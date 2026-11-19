@@ -1,10 +1,11 @@
 --[[
 [INPUT]: depends on rex.block and rex.sleep from the Rex Lua API; lib/util; lib/agents; lib/snapshot
-[OUTPUT]: exports restore: key(pane), text(pane), plan(saved, live, running, opts) (pure);
-          running(saved, opts) -> open chat set; chats(saved, opts) -> the saved chats not open;
-          run(saved, opts) -> { agents, programs }
+[OUTPUT]: exports restore: key(pane), id(pane), text(pane), plan(saved, live, running, opts) (pure);
+          running(saved, opts) -> open chat set; pending(saved, opts) -> what a restore would bring back;
+          run(saved, opts) -> { agents, programs, reopened }; open(chat, session_id) -> a new tab
 [POS]: the writer side of rex-revive, and the only module that types into terminals.
-       plan decides; run collects, plans, types, and tries again while restored tabs settle.
+       plan decides; run collects, plans, types, and tries again while restored tabs settle;
+       open starts a closed chat in a new tab, which needs no plan.
 [PROTOCOL]: Update this header on change, then check CLAUDE.md
 ]]
 
@@ -21,6 +22,11 @@ local TYPE_GAP = 0.3   -- seconds between two typed commands
 -- "agent:session" for a chat, nil for anything else.
 function restore.key(p)
   if p.kind == "agent" and p.agent and p.session then return agents.key(p.agent, p.session) end
+end
+
+-- What a person picks in a question: a chat's key, or "program:<block>" for another program.
+function restore.id(p)
+  return restore.key(p) or (p.kind == "program" and p.block_id and "program:" .. p.block_id) or nil
 end
 
 -- What to type into an idle tab: a chat's resume command, run; another
@@ -42,8 +48,8 @@ end
 -- What to type where, so the saved panes run again.
 --   saved, live  snaps (saved: the panes to bring back; live: every pane now)
 --   running      { ["agent:session"] = true } for chats open anywhere
---   opts.only    { [key] = true }: just these chats, nothing else
---   opts.leave   { [key] = true }: chats not to reopen, as someone chose
+--   opts.only    { [id] = true }: just these, nothing else (ids: restore.id)
+--   opts.leave   { [id] = true }: what not to reopen, as someone chose
 --   opts.programs  false: chats only
 --   opts.skip    { [block_id] = true }: typed into on an earlier try
 --   opts.dir_exists  (tests replace it)
@@ -65,10 +71,10 @@ function restore.plan(saved, live, running, opts)
   end
   local actions, notes, busy, claimed = {}, {}, 0, {}
   for _, p in ipairs(util.list(saved and saved.panes)) do
-    local key, text = restore.key(p), restore.text(p)
+    local key, id, text = restore.key(p), restore.id(p), restore.text(p)
     local wanted = text and (p.kind == "agent" or opts.programs ~= false)
-      and (not opts.only or (key and opts.only[key]))
-      and not (key and opts.leave and opts.leave[key])
+      and (not opts.only or (id and opts.only[id]))
+      and not (id and opts.leave and opts.leave[id])
     if wanted then
       local target = by_block[p.block_id] or by_position[position(p) or ""]
       if not target then
@@ -108,16 +114,25 @@ function restore.running(saved, opts)
   return agents.running(held, opts)
 end
 
--- The saved chats that aren't open anywhere, one entry per chat, in save order.
+-- What a restore of saved would bring back, in save order: each chat not open
+-- anywhere, once, and unless opts.programs is false each other program.
+--   { key = restore.id, kind, agent, session, command, cwd, where }
 -- It looks at the save only, not at tabs, so it works while restored tabs
 -- are still starting.
-function restore.chats(saved, opts)
+function restore.pending(saved, opts)
+  opts = opts or {}
   local open, out = restore.running(saved, opts), {}
   for _, p in ipairs(util.list(saved and saved.panes)) do
-    local key = restore.key(p)
-    if key and not open[key] then
-      open[key] = true
-      out[#out + 1] = { key = key, agent = p.agent, session = p.session, cwd = p.cwd, where = where(p) }
+    local key, id, wanted = restore.key(p), restore.id(p), nil
+    if key then
+      wanted = not open[key]
+    else
+      wanted = id and restore.text(p) and opts.programs ~= false
+    end
+    if wanted then
+      if key then open[key] = true end
+      out[#out + 1] = { key = id, kind = p.kind, agent = p.agent, session = p.session, command = p.command,
+                        cwd = p.cwd, where = where(p) }
     end
   end
   return out
@@ -125,13 +140,14 @@ end
 
 -- Bring the saved panes back into the tabs Rex shows now.
 --   opts: dry_run, only, leave, programs, tries, home, reader (passed to collect)
+-- result.reopened: { [key] = true } for each chat typed.
 -- Tabs Rex has just restored may still be starting their shells, which can
 -- look busy, so it plans again for a while. A tab is typed into at most once.
 function restore.run(saved, opts)
   opts = opts or {}
   local tries = opts.dry_run and 1 or opts.tries or TRIES
   local done, typed = {}, {}
-  local result = { agents = 0, programs = 0 }
+  local result = { agents = 0, programs = 0, reopened = typed }
   for try = 1, tries do
     if try > 1 then rex.sleep(WAIT) end
     local live = snapshot.collect(opts)
@@ -163,6 +179,16 @@ function restore.run(saved, opts)
     util.log(string.format("  %d tabs are busy, maybe still starting; trying again in %ds", busy, WAIT))
   end
   return result
+end
+
+-- Starts a chat in a new tab of a session, in the chat's folder: a closed
+-- chat has no tab left to type into. Returns the new tab, or nil and an error.
+-- A script must attach to a session before it adds a window there.
+function restore.open(chat, session_id)
+  local attached, err = rex.call("session.attach", { session_id = session_id })
+  if not attached then return nil, err end
+  return rex.call("session.new_window", { session_id = session_id, layout = { block = {
+    flavor = snapshot.TERMINAL .. ".shell", options = { cwd = chat.cwd, initial_input = restore.text(chat) } } } })
 end
 
 return restore

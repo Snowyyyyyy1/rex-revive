@@ -7,6 +7,8 @@ the Rex server restarts.
   rex do revive.lua mode=save                   save now
   rex do revive.lua mode=restore [dry_run=true] [only=agent:id,...] [programs=false]
   rex do revive.lua mode=choices                the chats a restore would bring back, as JSON
+  rex do revive.lua mode=closed                 the closed chats, newest first, as JSON
+  rex do revive.lua mode=reopen [key=agent:id] [session=ID]   a closed chat (else the newest) in a new tab
   rex do revive.lua mode=settings [ask=false]   show the settings, or change them
   rex do revive.lua mode=version
 
@@ -14,11 +16,11 @@ Common arguments: state_dir=DIR (where saves go), palette=true (also notify), no
 Watch arguments: rex=PATH (the rex command, to ask in the Rex app), ask=false (don't ask, whatever
 the settings say).
 
-[INPUT]: depends on lib/util, lib/snapshot, lib/restore, lib/titles from this repository; rex.args, rex.on,
+[INPUT]: depends on lib/util, lib/snapshot, lib/restore, lib/titles, lib/closed from this repository; rex.args, rex.on,
          rex.after, rex.every, rex.call from the Rex Lua API
 [OUTPUT]: the rex-revive command: one mode per run, or a long-running watcher
-[POS]: the entry point. It owns arguments, settings.json, state.json, and the restart check;
-       lib/ does the reading, deciding, and typing.
+[POS]: the entry point. It owns arguments, settings.json, state.json, the restart check, and
+       how a question's rows are ordered and ticked; lib/ does the reading, deciding, and typing.
 [PROTOCOL]: Update this header on change, then check CLAUDE.md
 ]]
 
@@ -37,17 +39,20 @@ local util = require("util")
 local snapshot = require("snapshot")
 local restore = require("restore")
 local titles = require("titles")
+local closed = require("closed")
 
 local VERSION = "0.1.0"
 local STATE_DIR = util.state_dir(args)
 local SNAPS = STATE_DIR .. "/snapshots"
 local STATE_FILE = STATE_DIR .. "/state.json"
 local SETTINGS_FILE = STATE_DIR .. "/settings.json"   -- what the person chose; state.json is ours
+local CLOSED_FILE = STATE_DIR .. "/closed.json"       -- lib/closed.lua
 local MAX_AGE_DAYS = 30   -- an older save is never restored on its own
 local SAVE_EVERY = 60     -- seconds between saves while watching, at the least
 local SAVE_AFTER = 3      -- seconds to wait after a change before saving
 local APP_WAIT = 20       -- seconds to wait for a Rex app to connect after a restart
 local ASK_WAIT = 60       -- seconds to wait for an answer before reopening every chat
+local STALE_DAYS = 14     -- a chat idle longer starts unticked in a question
 
 -- What the person chose, defaults filled in. ask: ask in the Rex app which
 -- chats to reopen after a restart (true), or reopen every chat (false).
@@ -75,8 +80,10 @@ local function only()
   return out
 end
 
+-- A chat the last save had and this one hasn't is closed; one back in a tab isn't.
 local function save()
-  local snap = snapshot.save(SNAPS, snapshot.collect())
+  local snap, before = snapshot.save(SNAPS, snapshot.collect())
+  closed.update(CLOSED_FILE, closed.diff(before, snap))
   if args.verbose == true or args.palette == true then tell("Saved " .. snapshot.summary(snap) .. ".") end
   return snap
 end
@@ -107,34 +114,63 @@ local function app_connected()
   return false
 end
 
--- After a restart, ask in the Rex app which chats to reopen, through the
--- revive_choose action of integrations/rex_revive.lua. Returns the chats to
--- leave closed, or nil unless someone pressed Reopen: then every chat comes
--- back. A closed question counts as no answer, as the app can close it unseen.
-local function ask(saved)
+-- A question's rows, sorted in place: titles in, the chats active most
+-- recently first, then the programs. A chat idle over STALE_DAYS starts unticked.
+local function ranked(items)
+  titles.label(items)
+  local order = {}
+  for i, item in ipairs(items) do
+    order[item] = i
+    item.ticked = not (item.idle and item.idle > STALE_DAYS * 86400)
+  end
+  local function weight(item)
+    if item.kind ~= "agent" then return 3, order[item] end
+    if item.idle then return 1, item.idle end
+    return 2, order[item]
+  end
+  table.sort(items, function(a, b)
+    local group_a, value_a = weight(a)
+    local group_b, value_b = weight(b)
+    if group_a ~= group_b then return group_a < group_b end
+    if value_a ~= value_b then return value_a < value_b end
+    return order[a] < order[b]
+  end)
+  return items
+end
+
+-- After a restart, ask in the Rex app what to reopen (items: restore.pending),
+-- through the revive_choose action of integrations/rex_revive.lua. Returns the
+-- ids to leave closed, or nil unless someone pressed Reopen: then everything
+-- comes back. A closed question counts as no answer, as the app can close it
+-- unseen. Programs are only typed, never run: alone they aren't worth a question.
+local function ask(items)
   local wanted = args.ask
   if wanted == nil then wanted = settings().ask end
   if not wanted then return nil end
-  local chats = restore.chats(saved)
-  if #chats == 0 or not app_connected() then return nil end
-  util.log("asking in the Rex app which of " .. #chats .. " chats to reopen")
-  titles.label(chats)
+  local chats = 0
+  for _, item in ipairs(items) do
+    if item.kind == "agent" then chats = chats + 1 end
+  end
+  if chats == 0 or not app_connected() then return nil end
+  util.log(string.format("asking in the Rex app which of %s and %s to reopen",
+                         count(chats, "chat"), count(#items - chats, "program")))
+  ranked(items)
   local out = util.stdout({ args.rex or "rex", "--autostart=false", "do", "revive_choose",
-                            "--args", rex.json.encode({ chats = chats, timeout = ASK_WAIT }),
+                            "--args", rex.json.encode({ items = items, timeout = ASK_WAIT }),
                             "--timeout", ASK_WAIT + 5 .. "s" },
                           { timeout = ASK_WAIT + 10 })
   local ok, answer = pcall(rex.json.decode, out:match("([^\n]+)\n*$") or "")
   if not ok or type(answer) ~= "table" or type(answer.keys) ~= "table" then
     util.log("no answer (" .. tostring(type(answer) == "table" and answer.status or "none")
-             .. "); reopening every chat")
+             .. "); reopening everything")
     return nil
   end
   local chosen, leave = {}, {}
   for _, key in ipairs(answer.keys) do chosen[key] = true end
-  for _, c in ipairs(chats) do
-    if not chosen[c.key] then leave[c.key] = true end
+  for _, item in ipairs(items) do
+    if not chosen[item.key] then leave[item.key] = true end
   end
-  util.log(string.format("reopening %d of %d chats, as chosen", #answer.keys, #chats))
+  util.log(string.format("reopening %d of %d, as chosen", #answer.keys, #items))
   return leave
 end
 
@@ -154,11 +190,20 @@ local function startup()
     return save()
   end
   util.log("new Rex server; bringing back the save from " .. saved.saved_at)
-  local leave = ask(saved)
+  local items = restore.pending(saved, { programs = args.programs })
+  local leave = ask(items)
   local result = restore.run(saved, { programs = args.programs, leave = leave })
   util.log(report(result))
   -- Someone who pressed Reopen knows what comes back; tell the others.
   if not leave and result.agents + result.programs > 0 then notify(report(result)) end
+  -- The chats that didn't come back, unticked or with their tab gone, are closed now.
+  local waiting, gone = {}, {}
+  for _, item in ipairs(items) do waiting[item.key] = true end
+  for _, p in ipairs(saved.panes) do
+    local key = restore.key(p)
+    if key and waiting[key] and not result.reopened[key] then gone[#gone + 1] = p end
+  end
+  closed.update(CLOSED_FILE, gone)
   state.last_restore = { at = util.now_iso(), from = saved.saved_at, instance = status.instance_id,
                          agents = result.agents, programs = result.programs }
   util.write_json(STATE_FILE, state)
@@ -190,12 +235,58 @@ local function choices_mode()
   if saved then
     local actions = restore.plan(saved, live, restore.running(saved), { programs = false })
     for _, a in ipairs(actions) do
-      out[#out + 1] = { key = a.key, agent = a.agent, session = a.session, cwd = a.cwd, where = a.where }
+      out[#out + 1] = { key = a.key, kind = a.kind, agent = a.agent, session = a.session, cwd = a.cwd,
+                        where = a.where }
     end
-    titles.label(out)
+    ranked(out)
   end
   if #out == 0 and args.palette == true then notify("No saved chats to reopen.") end
   print(rex.json.encode(out))
+end
+
+-- The closed chats that aren't open anywhere now, newest first.
+local function closed_chats()
+  local list = closed.list(CLOSED_FILE)
+  local open, out = restore.running({ panes = list }), {}
+  for _, chat in ipairs(list) do
+    if not open[chat.key] then out[#out + 1] = chat end
+  end
+  return out
+end
+
+local function closed_mode()
+  local out = titles.label(closed_chats())
+  if #out == 0 and args.palette == true then notify("No closed chats to reopen.") end
+  print(rex.json.encode(out))
+end
+
+local function first_session()
+  local first = util.list((rex.call("session.list") or {}).sessions)[1]
+  return first and first.session_id
+end
+
+-- A closed chat (key=, else the newest) in a new tab: in session= (the app's
+-- current one), else in the chat's own session, else in the first one.
+local function reopen_mode()
+  local chat
+  for _, c in ipairs(closed_chats()) do
+    if not args.key or c.key == args.key then
+      chat = c
+      break
+    end
+  end
+  if not chat then return tell("No closed chats to reopen.") end
+  local tab, err
+  local function try(session_id)
+    if not tab and type(session_id) == "string" and session_id ~= "" then tab, err = restore.open(chat, session_id) end
+  end
+  try(args.session)
+  try(chat.session_id)
+  if not tab then try(first_session()) end
+  if not tab then return tell("Couldn't open a tab for " .. chat.key .. ": " .. tostring(err)) end
+  -- Out of the list now, so a second press reopens the next one.
+  closed.update(CLOSED_FILE, {}, { [chat.key] = true })
+  print("Reopened " .. chat.key .. " in a new tab.")
 end
 
 -- Save after each change and on a timer; restore when the server is new.
@@ -247,6 +338,8 @@ local MODES = {
   startup = startup,
   status = status_mode,
   choices = choices_mode,
+  closed = closed_mode,
+  reopen = reopen_mode,
   settings = settings_mode,
   version = function() print("rex-revive " .. VERSION) end,
   restore = function()
@@ -261,6 +354,7 @@ local MODES = {
 
 local mode = MODES[args.mode or "watch"]
 if not mode then
-  error("unknown mode " .. tostring(args.mode) .. "; use watch, save, restore, choices, settings, status, or version", 0)
+  error("unknown mode " .. tostring(args.mode)
+        .. "; use watch, save, restore, choices, closed, reopen, settings, status, or version", 0)
 end
 mode()

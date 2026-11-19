@@ -95,12 +95,6 @@ function util.write_json(path, value)
   return util.write_file(path, rex.json.encode(value, { indent = true }) .. "\n")
 end
 
-function util.exists(path)
-  local f = io.open(path, "rb")
-  if f then f:close() return true end
-  return false
-end
-
 function util.is_dir(path)
   local _, r = util.stdout({ "test", "-d", path })
   return r ~= nil and r.ok
