@@ -36,13 +36,18 @@ Requirements: Rex with a recent Lua API (control API revision 17 or later for **
 
 There is nothing to do day to day. rex-revive saves what runs in each tab a few seconds after any change, and at least once a minute.
 
-When the Rex server starts again, the Rex app asks **Rex restarted · Reopen chats**, with every saved chat ticked. Untick what you don't want and press **Reopen**. If you close the question, or don't answer within a minute, or no Rex app is open, every chat comes back, and a notification such as "Reopened 6 chats." says so. Rex has no way for a script to show a notice inside the app, so that notification is the system's.
+When the Rex server starts again, the Rex app asks **Rex restarted · Reopen chats**, with every saved chat ticked. Each row shows the chat's title and how long ago it was active. Untick what you don't want, then press **⌘↩** or click **Reopen**. If you close the question, or don't answer within a minute, or no Rex app is open, every chat comes back, and a notification such as "Reopened 6 chats." says so. Rex has no way for a script to show a notice inside the app, so that notification is the system's.
+
+To reopen every chat without being asked, choose **Choose What Happens After a Restart…** in the command palette, or run `rex do "$S" mode=settings ask=false` (see below). The setting stays through updates.
+
+**Titles.** Claude Code: your rename (`/rename`), else Claude's own title, else your first prompt. Codex: the thread's name, else your first prompt; this needs `sqlite3`, which macOS has. pi keeps no title, so it's your first prompt.
 
 From the command palette (search for "revive"):
 
 - **Choose Chats to Reopen…** lists the saved chats that aren't open, all ticked, and reopens the ones you keep ticked.
 - **Reopen Chats and Programs in Their Tabs** brings back everything at once.
 - **Save Open Chats and Programs Now** saves right away.
+- **Choose What Happens After a Restart…** asks which chats to reopen after a restart, or reopens them all.
 
 From a terminal:
 
@@ -56,6 +61,7 @@ rex do "$S" mode=restore                     # bring back what isn't running
 rex do "$S" mode=restore only=claude:ID      # bring back just these chats (agent:id, comma separated)
 rex do "$S" mode=restore programs=false      # chats only, no other programs
 rex do "$S" mode=choices                     # the chats a restore would bring back, as JSON
+rex do "$S" mode=settings ask=false          # reopen every chat after a restart, without asking (ask=true: ask again)
 ```
 
 ## How it works
@@ -110,7 +116,7 @@ test/e2e.sh          # unit tests, then end-to-end tests on a throwaway Rex serv
 test/e2e.sh --unit   # unit tests only
 ```
 
-The end-to-end test needs Rex, `jq`, and a C compiler. It runs its own Rex server on its own socket, with fake agents in a throwaway home folder, and never touches your Rex server or your chats.
+The end-to-end test needs Rex, `jq`, `sqlite3`, and a C compiler. It runs its own Rex server on its own socket, with fake agents in a throwaway home folder, and never touches your Rex server or your chats.
 
 ## Acknowledgements
 

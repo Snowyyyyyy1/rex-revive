@@ -1,7 +1,7 @@
 #!/bin/bash
 # End-to-end test of rex-revive on a throwaway Rex server.
 #
-#   test/e2e.sh            unit tests, then the end-to-end test (needs Rex, jq, and a C compiler)
+#   test/e2e.sh            unit tests, then the end-to-end test (needs Rex, jq, sqlite3, and a C compiler)
 #   test/e2e.sh --unit     unit tests only
 #   REX=/path/to/rex test/e2e.sh
 #
@@ -89,8 +89,9 @@ json() { jq -e "$@" >/dev/null; }                     # a jq check, quietly
 for agent in claude codex pi; do
   cc -O0 -o "$T/bin/$agent" -DAGENT="\"$agent\"" -DHOME_DIR="\"$H\"" "$here/test/fake_agent.c"
 done
-mkdir -p "$H/.pi/agent/extensions"
+mkdir -p "$H/.pi/agent/extensions" "$H/.claude/sessions"
 cp "$here/integrations/pi-rex-revive.ts" "$H/.pi/agent/extensions/rex-revive.ts"
+echo '{}' >"$H/.claude/sessions/notes.json"   # a record folder can hold other files
 CODEX=11111111-2222-4333-8444-555555555555
 CLAUDE=22222222-3333-4444-8555-666666666666
 PI=33333333-4444-4555-8666-777777777777
@@ -166,7 +167,35 @@ kill "$outside" 2>/dev/null || true
 wait "$outside" 2>/dev/null || true
 stop_server
 start_server
+# Conversation files, for the titles in the list (lib/titles.lua).
+mkdir -p "$H/.claude/projects/-fake" "$H/.pi/agent/sessions/--fake--" "$H/.codex"
+: >"$H/.codex/state_x.local.sqlite"   # not a state_N database, as on a real machine
+cat >"$H/.claude/projects/-fake/$NEW_CLAUDE.jsonl" <<JSON
+{"type":"user","isMeta":true,"message":{"role":"user","content":"meta"}}
+{"type":"user","message":{"role":"user","content":"first prompt"}}
+{"type":"ai-title","aiTitle":"Old title","sessionId":"$NEW_CLAUDE"}
+{"type":"custom-title","customTitle":"Renamed chat","sessionId":"$NEW_CLAUDE"}
+{"type":"ai-title","aiTitle":"Newer title","sessionId":"$NEW_CLAUDE"}
+JSON
+cat >"$H/.claude/projects/-fake/$CLAUDE.jsonl" <<JSON
+{"type":"user","message":{"role":"user","content":"<command-name>/clear</command-name>"}}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","content":"x"}]}}
+{"type":"user","message":{"role":"user","content":[{"type":"text","text":"Fix   the\nlogin bug"}]}}
+JSON
+cat >"$H/.pi/agent/sessions/--fake--/2026-01-01T00-00-00-000Z_$PI.jsonl" <<JSON
+{"type":"session","id":"$PI"}
+{"type":"message","message":{"role":"system","content":[{"type":"text","text":"system"}]}}
+{"type":"message","message":{"role":"user","content":[{"type":"text","text":"## **pi** first [prompt](https://x.example)"}]}}
+JSON
+sqlite3 "$H/.codex/state_5.sqlite" "create table threads(id text primary key, name text,
+  first_user_message text, updated_at integer);
+  insert into threads values('$CODEX', 'Codex named thread', 'first', strftime('%s', 'now') - 7200);"
 D mode=choices | tail -1 >"$T/choices.json"
+title_of() { jq -r --arg k "$1" '.[] | select(.key == $k) | "\(.title // "-") | \(.ago // "-")"' "$T/choices.json"; }
+expect "claude: a rename wins over its own titles" test "$(title_of "claude:$NEW_CLAUDE")" = "Renamed chat | now"
+expect "claude: else the first prompt a person typed" test "$(title_of "claude:$CLAUDE")" = "Fix the login bug | now"
+expect "codex: the thread's name and last activity" test "$(title_of "codex:$CODEX")" = "Codex named thread | 2h"
+expect "pi: its first prompt" test "$(title_of "pi:$PI")" = "pi first prompt | now"
 expect "choices lists the saved chats" json --arg c "codex:$CODEX" --arg p "pi:$PI" --arg n "claude:$NEW_CLAUDE" \
   '[.[].key] | (index($c) != null) and (index($p) != null) and (index($n) != null)' "$T/choices.json"
 expect "choices lists chats only" json 'length == 6 and all(.[]; .agent != null and .session != null)' "$T/choices.json"
@@ -216,6 +245,17 @@ echo "6. The command palette actions load"
 sed -e "s|@REX@|$REX|" -e "s|@SCRIPT@|$here/revive.lua|" "$here/integrations/rex_revive.lua" >"$T/rex_revive.lua"
 printf 'package.path = "%s/?.lua;" .. package.path\nrequire("rex_revive")\n' "$T" >"$T/check.lua"
 expect "rex config check passes" sh -c "'$REX' config check '$T/check.lua' >'$T/check.log' 2>&1"
+expect "it defines four actions" grep -q '^actions: 4$' "$T/check.log"
+
+echo "7. The setting to reopen every chat without asking"
+# Not D: D passes ask=false, which is the setting under test.
+settings() { (cd / && HOME="$H" R do "$here/revive.lua" "state_dir=$T/saves" mode=settings "$@") | tail -1; }
+expect "asking is the default" test "$(settings)" = '{"ask":true}'
+settings ask=false >/dev/null
+expect "ask=false is kept" test "$(settings)" = '{"ask":false}'
+expect "status shows it" sh -c "(cd / && HOME='$H' '$REX' --autostart=false -S '$SOCK' do '$here/revive.lua' 'state_dir=$T/saves' mode=status) | grep -q 'After a restart: reopen every chat'"
+settings ask=true >/dev/null
+expect "ask=true turns it back on" test "$(settings)" = '{"ask":true}'
 
 echo
 echo "$passed passed, $failed failed"

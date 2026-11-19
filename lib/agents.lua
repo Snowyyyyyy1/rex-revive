@@ -1,6 +1,6 @@
 --[[
 [INPUT]: depends on lib/util for paths and files; on lib/proc for command lines, ages, and held files
-[OUTPUT]: exports agents: REGISTRY, ORDER, key(agent, session), match(p), needs_files(p), pid_record(...),
+[OUTPUT]: exports agents: REGISTRY, ORDER, key(agent, session), is_uuid(s), match(p), needs_files(p), pid_record(...),
           keep(argv, spec), identify(p, info, opts) -> chat or nil, command(chat) -> argv,
           running(paths, opts) -> set
 [POS]: the only place that knows coding agents. snapshot.lua asks it what a process is;
@@ -18,6 +18,7 @@ local UUID = "%x%x%x%x%x%x%x%x%-%x%x%x%x%-%x%x%x%x%-%x%x%x%x%-%x%x%x%x%x%x%x%x%x
 local START_SLACK = 10  -- seconds a chat may take between starting and recording itself
 
 local function is_uuid(s) return type(s) == "string" and s:match("^" .. UUID .. "$") ~= nil end
+agents.is_uuid = is_uuid
 
 -- A chat's identity, the same in saves, plans, and the running set.
 function agents.key(agent, session) return agent .. ":" .. session end
@@ -202,7 +203,9 @@ function agents.running(paths, opts)
     local dir = agents.REGISTRY[name].records
     if dir then
       for _, path in ipairs(util.list_dir(home .. dir, ".json")) do
-        local pid = tonumber(util.basename(path):match("^(%d+)%.json$"))
+        -- Rex's string.match returns no value at all on a miss, and tonumber()
+        -- with no argument raises: the extra parentheses make it a nil.
+        local pid = tonumber((util.basename(path):match("^(%d+)%.json$")))
         if pid then
           found[#found + 1] = { name, pid, path }
           pids[#pids + 1] = pid

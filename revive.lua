@@ -7,15 +7,17 @@ the Rex server restarts.
   rex do revive.lua mode=save                   save now
   rex do revive.lua mode=restore [dry_run=true] [only=agent:id,...] [programs=false]
   rex do revive.lua mode=choices                the chats a restore would bring back, as JSON
+  rex do revive.lua mode=settings [ask=false]   show the settings, or change them
   rex do revive.lua mode=version
 
 Common arguments: state_dir=DIR (where saves go), palette=true (also notify), notify=false.
-Watch arguments: rex=PATH (the rex command, to ask in the Rex app), ask=false (never ask).
+Watch arguments: rex=PATH (the rex command, to ask in the Rex app), ask=false (don't ask, whatever
+the settings say).
 
-[INPUT]: depends on lib/util, lib/snapshot, lib/restore from this repository; rex.args, rex.on,
+[INPUT]: depends on lib/util, lib/snapshot, lib/restore, lib/titles from this repository; rex.args, rex.on,
          rex.after, rex.every, rex.call from the Rex Lua API
 [OUTPUT]: the rex-revive command: one mode per run, or a long-running watcher
-[POS]: the entry point. It owns arguments, state.json, and the restart check;
+[POS]: the entry point. It owns arguments, settings.json, state.json, and the restart check;
        lib/ does the reading, deciding, and typing.
 [PROTOCOL]: Update this header on change, then check CLAUDE.md
 ]]
@@ -34,16 +36,26 @@ package.path = root() .. "/lib/?.lua;" .. package.path
 local util = require("util")
 local snapshot = require("snapshot")
 local restore = require("restore")
+local titles = require("titles")
 
 local VERSION = "0.1.0"
 local STATE_DIR = util.state_dir(args)
 local SNAPS = STATE_DIR .. "/snapshots"
 local STATE_FILE = STATE_DIR .. "/state.json"
+local SETTINGS_FILE = STATE_DIR .. "/settings.json"   -- what the person chose; state.json is ours
 local MAX_AGE_DAYS = 30   -- an older save is never restored on its own
 local SAVE_EVERY = 60     -- seconds between saves while watching, at the least
 local SAVE_AFTER = 3      -- seconds to wait after a change before saving
 local APP_WAIT = 20       -- seconds to wait for a Rex app to connect after a restart
 local ASK_WAIT = 60       -- seconds to wait for an answer before reopening every chat
+
+-- What the person chose, defaults filled in. ask: ask in the Rex app which
+-- chats to reopen after a restart (true), or reopen every chat (false).
+local function settings()
+  local chosen = util.read_json(SETTINGS_FILE) or {}
+  chosen.ask = chosen.ask ~= false
+  return chosen
+end
 
 -- notify=false keeps a run quiet (the tests use it).
 local function notify(message)
@@ -100,12 +112,16 @@ end
 -- leave closed, or nil unless someone pressed Reopen: then every chat comes
 -- back. A closed question counts as no answer, as the app can close it unseen.
 local function ask(saved)
-  if args.ask == false then return nil end
+  local wanted = args.ask
+  if wanted == nil then wanted = settings().ask end
+  if not wanted then return nil end
   local chats = restore.chats(saved)
   if #chats == 0 or not app_connected() then return nil end
   util.log("asking in the Rex app which of " .. #chats .. " chats to reopen")
+  titles.label(chats)
   local out = util.stdout({ args.rex or "rex", "--autostart=false", "do", "revive_choose",
-                            "--args", rex.json.encode({ chats = chats }), "--timeout", ASK_WAIT .. "s" },
+                            "--args", rex.json.encode({ chats = chats, timeout = ASK_WAIT }),
+                            "--timeout", ASK_WAIT + 5 .. "s" },
                           { timeout = ASK_WAIT + 10 })
   local ok, answer = pcall(rex.json.decode, out:match("([^\n]+)\n*$") or "")
   if not ok or type(answer) ~= "table" or type(answer.keys) ~= "table" then
@@ -160,6 +176,7 @@ local function status_mode()
     local which = snap.server.instance == status.instance_id and "this server" or "an earlier server"
     print(string.format("Save of %s (%s): %s", snap.saved_at, which, snapshot.summary(snap)))
   end
+  print("After a restart: " .. (settings().ask and "ask in the Rex app which chats to reopen" or "reopen every chat"))
   local state = util.read_json(STATE_FILE) or {}
   if state.last_restore then
     print(string.format("Last restore at %s, from the save of %s", state.last_restore.at, state.last_restore.from))
@@ -175,6 +192,7 @@ local function choices_mode()
     for _, a in ipairs(actions) do
       out[#out + 1] = { key = a.key, agent = a.agent, session = a.session, cwd = a.cwd, where = a.where }
     end
+    titles.label(out)
   end
   if #out == 0 and args.palette == true then notify("No saved chats to reopen.") end
   print(rex.json.encode(out))
@@ -212,12 +230,24 @@ local function watch()
   rex.every(SAVE_EVERY, tick)
 end
 
+-- Prints the settings as JSON; with ask=true or ask=false, changes them first.
+local function settings_mode()
+  local chosen = settings()
+  if args.ask ~= nil then
+    chosen.ask = args.ask ~= false
+    util.mkdirs(STATE_DIR)
+    util.write_json(SETTINGS_FILE, chosen)
+  end
+  print(rex.json.encode(chosen))
+end
+
 local MODES = {
   watch = watch,
   save = save,
   startup = startup,
   status = status_mode,
   choices = choices_mode,
+  settings = settings_mode,
   version = function() print("rex-revive " .. VERSION) end,
   restore = function()
     local live = snapshot.collect()
@@ -231,6 +261,6 @@ local MODES = {
 
 local mode = MODES[args.mode or "watch"]
 if not mode then
-  error("unknown mode " .. tostring(args.mode) .. "; use watch, save, restore, choices, status, or version", 0)
+  error("unknown mode " .. tostring(args.mode) .. "; use watch, save, restore, choices, settings, status, or version", 0)
 end
 mode()

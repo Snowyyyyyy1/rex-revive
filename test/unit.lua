@@ -3,7 +3,7 @@ Unit tests for lib/. They only read, and need no Rex sessions:
 
   rex do test/unit.lua root="$PWD"     (test/e2e.sh runs them too)
 
-[INPUT]: depends on lib/proc, lib/agents, lib/snapshot, lib/restore of the repository at root=
+[INPUT]: depends on lib/proc, lib/agents, lib/snapshot, lib/restore, lib/titles of the repository at root=
 [OUTPUT]: prints each failure and "N passed, M failed"; raises when any failed
 [POS]: the fast layer of test/. It covers every pure function; e2e.sh covers Rex itself.
 [PROTOCOL]: Update this header on change, then check CLAUDE.md
@@ -16,6 +16,7 @@ local proc = require("proc")
 local agents = require("agents")
 local snapshot = require("snapshot")
 local restore = require("restore")
+local titles = require("titles")
 
 local passed, failed = 0, 0
 local function show(v) return type(v) == "table" and rex.json.encode(v) or tostring(v) end
@@ -208,6 +209,14 @@ check("chats: the saved chats, once each, programs left out",
   end)(), { "claude:" .. ID .. " @ work tab 1 pane 1", "pi:" .. ID2 .. " @ work tab 2 pane 1" })
 check("plan: quoting", restore.text({ kind = "agent", agent = "claude", session = ID, options = { "--add-dir", "my dir" } }),
   "claude --add-dir 'my dir' --resume " .. ID .. "\n")
+
+-- titles: formatting
+check("clip: one line, spaces collapsed", titles.clip("  Fix\n  the   bug ", 60), "Fix the bug")
+check("clip: counts characters, not bytes", titles.clip("一二三四五", 3), "一二三…")
+check("clip: exactly n characters stay whole", titles.clip("abc", 3), "abc")
+check("clip: no text", titles.clip(" \n ", 5), nil)
+check("ago", { titles.ago(30), titles.ago(300), titles.ago(7200), titles.ago(3 * 86400), titles.ago(30 * 86400) },
+  { "now", "5m", "2h", "3d", "4w" })
 
 print(string.format("%d passed, %d failed", passed, failed))
 if failed > 0 then error("unit tests failed", 0) end
