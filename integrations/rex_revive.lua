@@ -3,8 +3,9 @@
          config Lua API; runs revive.lua through the rex command
 [OUTPUT]: command palette actions revive_choose (asks with rex.ui.pick), revive_restore, revive_save,
           revive_reopen_closed (asks with rex.ui.pick), revive_reopen_last (bound to ⇧⌘T unless this
-          config already binds that key), revive_settings (asks with rex.ui.pick whether to ask after
-          a restart). The watcher also runs revive_choose with args.items after a restart, to ask in
+          config already binds that key), revive_preview (lists what a restart would bring back; a
+          pick shows that tab), revive_reopen_earlier (picks an earlier save, then its chats),
+          revive_settings (asks with rex.ui.pick whether to ask after a restart). The watcher also runs revive_choose with args.items after a restart, to ask in
           the Rex app.
 [POS]: the Rex config side of rex-revive. install.sh copies it to ~/.config/rex/rex_revive.lua and
        fills in @REX@, @SCRIPT@, and @LOG@ (the watcher's log, empty without one); init.lua loads it with require("rex_revive"). It only starts
@@ -159,6 +160,57 @@ rex.action{
   category = "rex-revive",
   keywords = "revive reopen last closed chat tab undo resume",
   run = function(ctx) reopen(ctx) end,
+}
+
+rex.action{
+  name = "revive_preview",
+  title = "Preview What a Restart Brings Back…",
+  description = "Lists each tab a restart would bring back and what it would type there. Pick one to show it.",
+  category = "rex-revive",
+  keywords = "revive preview restart restore what check chats programs",
+  run = function()
+    local items = run_revive("preview")
+    if not items or #items == 0 then return end
+    local rows, by_key = {}, {}
+    for _, item in ipairs(items) do
+      local r = row(item)
+      if item.kind == "agent" then
+        r.subtitle = "runs " .. item.typed .. " · " .. tostring(item.where)
+      elseif item.note then
+        r.subtitle = "chat not known: typed, not run · " .. item.typed .. " · " .. tostring(item.where)
+      end
+      rows[#rows + 1] = r
+      by_key[item.key] = item
+    end
+    local key = pick{ title = "A restart now brings back", placeholder = "Filter · ↩ shows the tab", items = rows }
+    local item = type(key) == "string" and by_key[key]
+    if item then start("focus", { "session=" .. item.session_id, "block=" .. item.block_id }) end
+  end,
+}
+
+rex.action{
+  name = "revive_reopen_earlier",
+  title = "Reopen Chats from an Earlier Save…",
+  description = "Lists earlier saves, kept every half hour, then the chats of one that aren't open, and reopens the ones you tick.",
+  category = "rex-revive",
+  keywords = "revive history earlier save layout yesterday restore reopen chats",
+  run = function(ctx)
+    local saves = run_revive("history")
+    if not saves or #saves == 0 then return end
+    local rows, by_id = {}, {}
+    for _, s in ipairs(saves) do
+      rows[#rows + 1] = { id = s.id, icon = "clock", title = s.title, detail = s.ago,
+                          subtitle = s.chats .. " not open now · saved: " .. s.summary }
+      by_id[s.id] = s
+    end
+    local id = pick{ title = "Reopen chats from an earlier save", placeholder = "Filter saves", items = rows }
+    if type(id) ~= "string" then return end
+    local chats = run_revive("choices", { "from=" .. id })
+    if not chats or #chats == 0 then return end
+    local keys = choose(chats, "Reopen chats from " .. by_id[id].title)
+    if not keys or #keys == 0 then return end
+    reopen(ctx, { "from=" .. id, "only=" .. table.concat(keys, ",") })
+  end,
 }
 
 -- Rex has no default for this key. Bound only when nothing before require("rex_revive")

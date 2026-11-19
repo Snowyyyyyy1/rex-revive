@@ -187,6 +187,60 @@ function READERS.amp(id, home)
   return title, modified(path)
 end
 
+-- The first line of a file, decoded, or an empty table.
+local function head(path)
+  local f = io.open(path, "r")
+  local first = f and f:read("*l")
+  if f then f:close() end
+  local ok, entry = pcall(rex.json.decode, first or "")
+  return ok and type(entry) == "table" and entry or {}
+end
+
+-- ~/.factory/sessions/<folder>/<id>.jsonl, whose first line, session_start,
+-- carries the title (Droid's first prompt until it names the chat).
+function READERS.droid(id, home)
+  local path = find(home .. "/.factory/sessions", id .. ".jsonl")
+  if not path then return nil end
+  local start = head(path)
+  return titles.clip(start.title or start.sessionTitle, MAX_CHARS), modified(path)
+end
+
+-- ~/.cursor/chats/<md5 of its folder>/<id>/: store.db holds the messages as
+-- JSON blobs, oldest first by rowid. Cursor's own name stays "New Agent", so
+-- the title is the first prompt, which Cursor wraps in <user_query>.
+-- meta.json says when the chat was last active. Without sqlite3, no title.
+READERS["cursor-agent"] = function(id, home)
+  local dir = find(home .. "/.cursor/chats", id)
+  if not dir then return nil end
+  -- Cursor's own instructions name the tag too, so take the first message that closes it.
+  local out = util.stdout({ "sqlite3", "-readonly", "-json", dir .. "/store.db", "select cast(data as text) as m "
+    .. "from blobs where m like '%\"role\":\"user\"%</user_query>%' order by rowid limit 20" })
+  local ok, rows = pcall(rex.json.decode, out)
+  local title
+  for _, row in ipairs(ok and type(rows) == "table" and rows or {}) do
+    local okm, message = pcall(rex.json.decode, row.m or "")
+    local content = okm and type(message) == "table" and message.role == "user" and message.content
+    local text = type(content) == "table" and type(content[1]) == "table" and content[1].text or content
+    title = typed(type(text) == "string" and text:match("<user_query>%s*(.-)%s*</user_query>"))
+    if title then break end
+  end
+  local active = tonumber(head(dir .. "/meta.json").updatedAtMs)
+  return title, active and math.floor(active / 1000) or modified(dir .. "/store.db")
+end
+
+-- ~/.local/share/opencode/opencode.db, table session_v2: the title opencode
+-- gives the session, and when it was last updated (ms). The ID is ses_ and
+-- letters and digits (agents.valid), so it is safe in the query.
+function READERS.opencode(id, home)
+  local out = util.stdout({ "sqlite3", "-readonly", "-json", home .. "/.local/share/opencode/opencode.db",
+    "select title, time_updated from session_v2 where id = '" .. id .. "'" })
+  local ok, rows = pcall(rex.json.decode, out)
+  local row = ok and type(rows) == "table" and rows[1]
+  if type(row) ~= "table" then return nil end
+  local updated = tonumber(row.time_updated)
+  return titles.clip(row.title, MAX_CHARS), updated and math.floor(updated / 1000)
+end
+
 -- Fills in chat.title, chat.idle (seconds since it was last active) and
 -- chat.ago ("3h") where the files tell, for the chats among items such as
 -- restore.pending returns. opts.home and opts.now are for the tests.

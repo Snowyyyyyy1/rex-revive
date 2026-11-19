@@ -1,7 +1,8 @@
 --[[
 [INPUT]: depends on rex.call, rex.session, rex.block from the Rex Lua API; lib/util; lib/proc; lib/agents
 [OUTPUT]: exports snapshot: TERMINAL, chain(process), describe(process, info, opts) -> pane fields (pure);
-          collect(opts) -> snap; save(dir, snap) -> saved, before; all(dir); previous(dir, instance); summary(snap)
+          idle_shell(session_id, block_id) -> { cwd } or nil; collect(opts) -> snap;
+          checkpoint(dir, saved) and saves(dir) -> every save with its id, for the history; save(dir, snap) -> saved, before; all(dir); previous(dir, instance); summary(snap)
 [POS]: the reader side of rex-revive. It turns what Rex shows now into a snap, and keeps snaps on disk.
        restore.lua consumes both a saved snap and a fresh one. It never writes to a terminal.
 [PROTOCOL]: Update this header on change, then check CLAUDE.md
@@ -74,6 +75,20 @@ function snapshot.describe(process, info, opts)
   local top = chain[1]
   if not top or is_shell(top) then return { kind = "shell", cwd = (top or outer).cwd } end
   return { kind = "program", cwd = top.cwd or outer.cwd, command = command_of(top, info) or top.name }
+end
+
+-- The idle shell in one terminal block, as { cwd }, or nil when the block is
+-- gone or runs something (an agent's own subshell too): one process call,
+-- no ps and no lsof, for typing into a single known tab.
+function snapshot.idle_shell(session_id, block_id)
+  local process = rex.block.call(TERMINAL, "process", { session_id = session_id, block_id = block_id })
+  if type(process) ~= "table" then return nil end
+  local chain = snapshot.chain(process)
+  for _, p in ipairs(chain) do
+    if agents.match(p) then return nil end
+  end
+  local top = chain[1]
+  if top and is_shell(top) then return { cwd = top.cwd } end
 end
 
 local function node_id(node)
@@ -185,6 +200,58 @@ function snapshot.all(dir)
     local snap = util.read_json(path)
     if type(snap) == "table" and type(snap.server) == "table" and snap.saved_at and type(snap.panes) == "table" then
       snap.path = path
+      out[#out + 1] = snap
+    end
+  end
+  table.sort(out, function(a, b) return a.saved_at > b.saved_at end)
+  return out
+end
+
+---------------------------------------------------------------------------
+-- History: <dir>/history/<saved_at>.json, a copy of a save every HISTORY_EVERY
+-- seconds at most, and only when what runs changed; the newest HISTORY_KEEP.
+-- A server instance's own file is overwritten on every save, so without these
+-- a layout from an hour ago would be gone.
+
+local HISTORY_EVERY = 30 * 60
+local HISTORY_KEEP = 48
+
+-- What a save brings back, as text: two saves with the same one are the same layout.
+local function signature(snap)
+  local out = {}
+  for _, p in ipairs(util.list(snap and snap.panes)) do
+    out[#out + 1] = table.concat({ tostring(p.session_label), tostring(p.kind), tostring(p.agent),
+                                   tostring(p.session), tostring(p.command), tostring(p.cwd) }, "|")
+  end
+  return table.concat(out, "\n")
+end
+
+-- Copies a save into the history when the newest copy is old enough and differs.
+-- File names are saved_at with ":" made "-": they sort by time.
+function snapshot.checkpoint(dir, saved)
+  if #util.list(saved.panes) == 0 then return end
+  local history = dir .. "/history"
+  local names = util.list_dir(history, ".json")
+  table.sort(names)
+  local newest = names[#names]
+  local name = function(iso) return history .. "/" .. iso:gsub(":", "-") .. ".json" end
+  if newest then
+    if newest > name(util.iso(os.time() - HISTORY_EVERY)) then return end
+    if signature(util.read_json(newest)) == signature(saved) then return end
+  end
+  util.mkdirs(history)
+  util.write_json(name(saved.saved_at), saved)
+  names[#names + 1] = name(saved.saved_at)
+  for i = 1, #names - HISTORY_KEEP do os.remove(names[i]) end
+end
+
+-- Every save, newest first, each with id: its path under dir ("<instance>.json"
+-- or "history/<time>.json"), which mode=reopen from= names.
+function snapshot.saves(dir)
+  local out = {}
+  for _, sub in ipairs({ "", "/history" }) do
+    for _, snap in ipairs(snapshot.all(dir .. sub)) do
+      snap.id = snap.path:sub(#dir + 2)
       out[#out + 1] = snap
     end
   end

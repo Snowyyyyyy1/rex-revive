@@ -2,10 +2,11 @@
 [INPUT]: depends on rex.block and rex.sleep from the Rex Lua API; lib/util; lib/agents; lib/snapshot
 [OUTPUT]: exports restore: key(pane), id(pane), text(pane), plan(saved, live, running, opts) (pure);
           running(saved, opts) -> open chat set; pending(saved, opts) -> what a restore would bring back;
-          run(saved, opts) -> { agents, programs, reopened }; open(chat, session_id) -> a new pane
+          run(saved, opts) -> { agents, programs, reopened }; into_tab(chat) -> typed into its own tab;
+          open(chat, session_id) -> a new pane
 [POS]: the writer side of rex-revive, and the only module that types into terminals.
        plan decides; run collects, plans, types, and tries again while restored tabs settle;
-       open starts a closed chat in a new pane or tab, which needs no plan.
+       into_tab and open bring back one closed chat, which needs no plan.
 [PROTOCOL]: Update this header on change, then check CLAUDE.md
 ]]
 
@@ -40,9 +41,21 @@ local function where(p)
   return string.format("%s tab %d pane %d", p.session_label or "session", p.window_index or 0, p.pane_index or 0)
 end
 
+restore.where = where
+
 local function position(p)
   if not p.session_label then return nil end
   return p.session_label .. "\0" .. tostring(p.window_index) .. "\0" .. tostring(p.pane_index)
+end
+
+-- The text that starts p in a shell whose folder is cwd: with a cd first when
+-- p ran in another folder that still exists.
+local function text_in(p, cwd, dir_exists)
+  local text = restore.text(p)
+  if text and p.cwd and p.cwd ~= cwd and (dir_exists or util.is_dir)(p.cwd) then
+    text = "cd " .. util.quote(p.cwd) .. " && " .. text
+  end
+  return text
 end
 
 -- What to type where, so the saved panes run again.
@@ -90,9 +103,7 @@ function restore.plan(saved, live, running, opts)
       elseif key and open[key] then
         notes[#notes + 1] = where(p) .. ": " .. key .. " is already open"
       else
-        if p.cwd and p.cwd ~= target.cwd and dir_exists(p.cwd) then
-          text = "cd " .. util.quote(p.cwd) .. " && " .. text
-        end
+        text = text_in(p, target.cwd, dir_exists)
         claimed[target.block_id] = true
         if key then open[key] = true end
         actions[#actions + 1] = { session_id = target.session_id, block_id = target.block_id, text = text,
@@ -116,12 +127,14 @@ end
 
 -- What a restore of saved would bring back, in save order: each chat not open
 -- anywhere, once, and unless opts.programs is false each other program.
+-- opts.running: the chats open now (restore.running), when the caller has it.
 --   { key = restore.id, kind, agent, session, command, cwd, where }
 -- It looks at the save only, not at tabs, so it works while restored tabs
 -- are still starting.
 function restore.pending(saved, opts)
   opts = opts or {}
-  local open, out = restore.running(saved, opts), {}
+  local open, out = {}, {}
+  for key in pairs(opts.running or restore.running(saved, opts)) do open[key] = true end
   for _, p in ipairs(util.list(saved and saved.panes)) do
     local key, id, wanted = restore.key(p), restore.id(p), nil
     if key then
@@ -179,6 +192,21 @@ function restore.run(saved, opts)
     util.log(string.format("  %d tabs are busy, maybe still starting; trying again in %ds", busy, WAIT))
   end
   return result
+end
+
+-- Types a closed chat back into its own tab (chat.block_id), when that tab is
+-- an idle shell again because its agent quit there. Asks Rex about that one
+-- tab only, after attaching to its session as any script must. Returns whether it typed.
+function restore.into_tab(chat)
+  if not (chat.block_id and rex.call("session.attach", { session_id = chat.session_id })) then return false end
+  local shell = snapshot.idle_shell(chat.session_id, chat.block_id)
+  if not shell then return false end
+  local tab = { session_id = chat.session_id, block_id = chat.block_id }
+  local ok = rex.block.call(snapshot.TERMINAL, "write",
+    { session_id = tab.session_id, block_id = tab.block_id, data = text_in(chat, shell.cwd) })
+  if not ok then return false end
+  rex.session.focus_block(tab)
+  return true
 end
 
 -- Starts a closed chat in a new pane of a session, in the chat's folder: in

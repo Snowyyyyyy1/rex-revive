@@ -13,6 +13,7 @@ Rex restores your sessions, tabs, and splits after a restart, but every tab come
 | Droid | Reopens on its session: `droid --resume <id>` |
 | Amp | Reopens on its thread: `amp threads continue <T-id>` |
 | Cursor Agent | Reopens on its chat: `cursor-agent --resume <id>` |
+| opencode | Reopens on its session: `opencode -s <ses_id>` |
 | Any other program | Typed at the prompt, not run. Press Enter if you want it. |
 | An idle shell | Left alone |
 
@@ -28,7 +29,7 @@ cd rex-revive
 
 - `--add-to-config` loads the command palette actions from Rex's `init.lua`.
 - `--pi` installs a small pi extension (see [pi](#pi)). Leave it out if you don't use pi.
-- `--gemini`, `--droid`, and `--amp` do the same for Gemini CLI, Droid, and Amp (see [Gemini CLI, Droid, and Amp](#gemini-cli-droid-and-amp)). Leave out the ones you don't use. Once installed, each is kept up to date by a plain `./install.sh`.
+- `--gemini`, `--droid`, `--amp`, and `--opencode` do the same for Gemini CLI, Droid, Amp, and opencode (see [Gemini CLI, Droid, Amp, and opencode](#gemini-cli-droid-amp-and-opencode)). Leave out the ones you don't use. Once installed, each is kept up to date by a plain `./install.sh`.
 - `--no-service` copies the files without starting the watcher.
 
 Without `--add-to-config` and the `require` line, the question after a restart can't be shown, and every chat comes back on its own.
@@ -58,6 +59,8 @@ From the command palette (search for "revive"):
 - **Reopen the Last Closed Chat** (⇧⌘T) reopens the chat closed last.
 - **Reopen Chats and Programs in Their Tabs** brings back everything at once.
 - **Save Open Chats and Programs Now** saves right away.
+- **Preview What a Restart Brings Back…** lists every tab a restart would bring back and the command it would type there; a chat rex-revive can't identify shows as "typed, not run". Pick one to show its tab.
+- **Reopen Chats from an Earlier Save…** lists earlier saves, then the chats of the one you pick that aren't open now, and reopens the ones you tick, each in its own session. rex-revive copies a save into its history every half hour at most, only when something changed, and keeps the last 48.
 - **Choose What Happens After a Restart…** asks which chats to reopen after a restart, or reopens them all.
 
 From a terminal:
@@ -89,8 +92,9 @@ Rex keeps each tab's block ID across a restart. rex-revive records, per block, w
 - **Codex** holds its session file, `~/.codex/sessions/…/rollout-…-<id>.jsonl`, open while it runs.
 - **Gemini CLI** and **Droid** do neither, so a SessionStart hook (`install.sh --gemini`, `--droid`) writes `~/.gemini/rex-revive/<pid>.json` or `~/.factory/rex-revive/<pid>.json`.
 - **Amp** does neither either, so a plugin (`install.sh --amp`) writes `~/.local/share/amp/rex-revive/<pid>.json`.
+- **opencode** keeps all sessions in one database, so a TUI plugin (`install.sh --opencode`) writes `~/.local/share/opencode/rex-revive/<pid>.json` with the session the TUI shows.
 - **Cursor Agent** holds its chat's store open, `~/.cursor/chats/…/<id>/store.db`, from the chat's first message on. It needs nothing installed.
-- Failing those, the session named on the command line (`--resume <id>`, `-r <id>`, `resume <id>`, `--session <id>`, `threads continue <T-id>`).
+- Failing those, the session named on the command line (`--resume <id>`, `-r <id>`, `resume <id>`, `--session <id>`, `threads continue <T-id>`, `-s <ses_id>`).
 
 A pid can be reused, so a pid record only counts when its start time matches the process's own. A chat whose conversation isn't certain comes back typed, not run.
 
@@ -109,16 +113,17 @@ pi hides which session it is on: it keeps no file open and blanks its command li
 
 The extension is about 50 lines ([integrations/pi-rex-revive.ts](integrations/pi-rex-revive.ts)). It writes one small JSON file per running pi and removes it when pi quits. It makes no network calls and prints nothing. pi chats started before you install it aren't covered.
 
-## Gemini CLI, Droid, and Amp
+## Gemini CLI, Droid, Amp, and opencode
 
 Like pi, none of them shows which session a running agent is on: they keep no file open and write no record of their own.
 
 - **Gemini CLI and Droid** run hooks from `settings.json` (`~/.gemini/settings.json`, `~/.factory/settings.json`). `install.sh --gemini` and `--droid` add one SessionStart hook, [integrations/agent-hook.sh](integrations/agent-hook.sh), next to any hooks you have. They back up the file first (`settings.json.rex-revive-backup`) and need `jq`. The hook runs on start, `/resume`, and `/clear`, finds the agent among its parent processes, and writes its pid, session ID, and start time.
 - **Amp** loads plugins from `~/.config/amp/plugins`. `install.sh --amp` copies [integrations/amp-rex-revive.ts](integrations/amp-rex-revive.ts) there. It writes amp's pid and thread ID when a session starts and when the thread changes, and removes the file when amp quits. amp runs plugins in a child process, so the plugin records its parent, the amp in your tab. Amp marks its plugin API as experimental.
+- **opencode** loads a TUI plugin from each folder in `~/.config/opencode/plugins` that holds a `tui.js`. `install.sh --opencode` copies [integrations/opencode-rex-revive.js](integrations/opencode-rex-revive.js) to `plugins/rex-revive/tui.js`. Every second it checks which session the TUI shows (a subagent's session counts as the one that started it) and writes the TUI's pid and that session's ID; on the home screen, and when opencode quits, it removes the file. Checked against opencode 2.3.2.
 
-None of them makes network calls or prints anything. Chats started before you install them aren't covered. `./uninstall.sh` removes the hooks and the plugin.
+None of them makes network calls or prints anything. Chats started before you install them aren't covered. `./uninstall.sh` removes the hooks and the plugins.
 
-Titles: Gemini CLI's first prompt; Amp's thread title, else its first prompt. Droid's and Cursor Agent's chats show their folder.
+Titles: Gemini CLI's first prompt; Amp's thread title, else its first prompt; Droid's session title; Cursor Agent's first prompt (its own chat name stays "New Agent"); opencode's session title. The last two need `sqlite3`.
 
 ## Limits
 

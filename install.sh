@@ -7,6 +7,7 @@
 #   ./install.sh --gemini         also add the SessionStart hook that records Gemini CLI's session (needs jq)
 #   ./install.sh --droid          also add the SessionStart hook that records Droid's session (needs jq)
 #   ./install.sh --amp            also install the amp plugin that records amp's thread
+#   ./install.sh --opencode       also install the opencode TUI plugin that records the session it shows
 #   ./install.sh --no-service     copy the files only
 #   REX=/path/to/rex ./install.sh use this rex command
 #
@@ -14,14 +15,14 @@
 #
 # [INPUT]: depends on revive.lua, lib/, service.sh, integrations/ of this repository; launchd or systemd
 # [OUTPUT]: the installed app, a login service, ~/.config/rex/rex_revive.lua, and with --pi, --gemini,
-#           --droid, --amp what records each agent's session (each kept up to date once installed)
+#           --droid, --amp, --opencode what records each agent's session (each kept up to date once installed)
 # [POS]: the only installer; uninstall.sh undoes each step it takes.
 # [PROTOCOL]: Update this header on change, then check CLAUDE.md
 set -eu
 
 [ -n "${HOME:-}" ] && [ -d "$HOME" ] || { echo "install.sh: HOME is not a folder" >&2; exit 1; }
 here=$(cd "$(dirname "$0")" && pwd)
-add_to_config=0 service=1 pi=0 gemini=0 droid=0 amp=0
+add_to_config=0 service=1 pi=0 gemini=0 droid=0 amp=0 opencode=0
 for arg in "$@"; do
   case "$arg" in
     --add-to-config) add_to_config=1 ;;
@@ -30,7 +31,8 @@ for arg in "$@"; do
     --gemini) gemini=1 ;;
     --droid) droid=1 ;;
     --amp) amp=1 ;;
-    -h|--help) sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    --opencode) opencode=1 ;;
+    -h|--help) sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "install.sh: unknown option $arg" >&2; exit 2 ;;
   esac
 done
@@ -68,7 +70,7 @@ say "Installed $script"
 
 # The service's PATH: where the agents and lsof live.
 path="/usr/bin:/bin:/usr/sbin:/sbin"
-for tool in claude codex pi gemini droid amp cursor-agent lsof; do
+for tool in claude codex pi gemini droid amp cursor-agent opencode lsof; do
   where=$(command -v "$tool" 2>/dev/null || true)
   case "$where" in /*) dir=$(dirname "$where"); case ":$path:" in *":$dir:"*) ;; *) path="$dir:$path" ;; esac ;; esac
 done
@@ -170,6 +172,14 @@ if [ "$amp" = 1 ] || [ -f "$amp_plugin" ]; then
   mkdir -p "$(dirname "$amp_plugin")"
   cp "$here/integrations/amp-rex-revive.ts" "$amp_plugin"
   say "Installed the amp plugin $amp_plugin (amp threads started from now on use it)"
+fi
+
+# opencode loads a TUI plugin from each folder in ~/.config/opencode/plugins that has a tui.js.
+opencode_plugin="${XDG_CONFIG_HOME:-$HOME/.config}/opencode/plugins/rex-revive/tui.js"
+if [ "$opencode" = 1 ] || [ -f "$opencode_plugin" ]; then
+  mkdir -p "$(dirname "$opencode_plugin")"
+  cp "$here/integrations/opencode-rex-revive.js" "$opencode_plugin"
+  say "Installed the opencode plugin $opencode_plugin (opencode started from now on uses it)"
 fi
 
 # Command palette actions, with this install's paths filled in.

@@ -9,6 +9,11 @@ the Rex server restarts.
   rex do revive.lua mode=choices                the chats a restore would bring back, as JSON
   rex do revive.lua mode=closed                 the closed chats, newest first, as JSON
   rex do revive.lua mode=reopen [key=agent:id] [session=ID]   a closed chat (else the newest) in a new tab
+  rex do revive.lua mode=reopen from=ID [only=agent:id,...]   chats of an earlier save that aren't open
+  rex do revive.lua mode=history                the saves with chats to reopen, newest first, as JSON
+  rex do revive.lua mode=choices from=ID        the chats of that save that aren't open, as JSON
+  rex do revive.lua mode=preview                what a restart would bring back now, as JSON
+  rex do revive.lua mode=focus session=ID block=ID   show that tab
   rex do revive.lua mode=settings [ask=false]   show the settings, or change them
   rex do revive.lua mode=version
 
@@ -43,7 +48,7 @@ local restore = require("restore")
 local titles = require("titles")
 local closed = require("closed")
 
-local VERSION = "0.1.0"
+local VERSION = "0.2.0"
 local STATE_DIR = util.state_dir(args)
 local SNAPS = STATE_DIR .. "/snapshots"
 local STATE_FILE = STATE_DIR .. "/state.json"
@@ -93,6 +98,7 @@ end
 -- A chat the last save had and this one hasn't is closed; one back in a tab isn't.
 local function save()
   local snap, before = snapshot.save(SNAPS, snapshot.collect())
+  snapshot.checkpoint(SNAPS, snap)
   local gone, present = closed.diff(before, snap)
   remember(gone, present, "its tab closed or its agent quit")
   if args.verbose == true or args.palette == true then tell("Saved " .. snapshot.summary(snap) .. ".") end
@@ -239,18 +245,29 @@ local function status_mode()
   end
 end
 
-local function choices_mode()
-  local live = snapshot.collect()
-  local saved = source(live.server.instance)
-  local out = {}
-  if saved then
-    local actions = restore.plan(saved, live, restore.running(saved), { programs = false })
-    for _, a in ipairs(actions) do
-      out[#out + 1] = { key = a.key, kind = a.kind, agent = a.agent, session = a.session, cwd = a.cwd,
-                        where = a.where }
-    end
-    ranked(out)
+-- An earlier save by the id snapshot.saves gives it, or nil.
+local function earlier(id)
+  for _, snap in ipairs(snapshot.saves(SNAPS)) do
+    if snap.id == id then return snap end
   end
+end
+
+-- The chats of a save that aren't open anywhere now, as a question's rows.
+local function pending_chats(saved)
+  return ranked(restore.pending(saved, { programs = false }))
+end
+
+-- The chats a restore would bring back, as a question's rows: from the save
+-- (from=, else the one restore uses), not from the tabs, so a tab still
+-- starting after a restart doesn't hide its chat.
+local function choices_mode()
+  local saved
+  if args.from then
+    saved = earlier(args.from)
+  else
+    saved = source((rex.call("server.status") or {}).instance_id)
+  end
+  local out = saved and pending_chats(saved) or {}
   if #out == 0 and args.palette == true then notify("No saved chats to reopen.") end
   print(rex.json.encode(out))
 end
@@ -271,29 +288,104 @@ local function closed_mode()
   print(rex.json.encode(out))
 end
 
+-- The saves with chats to reopen, newest first: { id, saved_at, title (local
+-- time), summary, chats, ago }.
+local function history_mode()
+  local out, now, saves, panes = {}, os.time(), snapshot.saves(SNAPS), {}
+  for _, snap in ipairs(saves) do
+    for _, p in ipairs(snap.panes) do panes[#panes + 1] = p end
+  end
+  -- One look at what runs, for every save: ps and lsof once, not once a save.
+  local running = restore.running({ panes = panes })
+  for _, snap in ipairs(saves) do
+    local chats = #restore.pending(snap, { programs = false, running = running })
+    local at = util.epoch(snap.saved_at)
+    if chats > 0 and at then
+      out[#out + 1] = { id = snap.id, saved_at = snap.saved_at, title = os.date("%b %d, %H:%M", at),
+                        summary = snapshot.summary(snap), chats = chats, ago = titles.ago(now - at) }
+    end
+  end
+  if #out == 0 and args.palette == true then notify("No earlier saves with chats to reopen.") end
+  print(rex.json.encode(out))
+end
+
+-- What a restart would bring back now, tab by tab: each chat with the command
+-- that resumes it (runs = true), each other program typed but not run, and
+-- each agent whose chat isn't known (note), which comes back typed only.
+local function preview_mode()
+  local out = {}
+  for _, p in ipairs(snapshot.collect().panes) do
+    local text = restore.text(p)
+    if p.kind ~= "shell" and text then
+      out[#out + 1] = { key = restore.id(p), kind = p.kind, agent = p.agent, session = p.session,
+                        command = p.command, cwd = p.cwd, where = restore.where(p), note = p.note,
+                        typed = (text:gsub("\n$", "")), runs = text:sub(-1) == "\n",
+                        session_id = p.session_id, block_id = p.block_id }
+    end
+  end
+  titles.label(out)
+  if #out == 0 and args.palette == true then notify("A restart now would bring nothing back: no chats or programs run.") end
+  print(rex.json.encode(out))
+end
+
+local function focus_mode()
+  if not (args.session and args.block and rex.call("session.attach", { session_id = args.session })) then return end
+  rex.session.focus_block{ session_id = args.session, block_id = args.block }
+end
+
 local function first_session()
   local first = util.list((rex.call("session.list") or {}).sessions)[1]
   return first and first.session_id
 end
 
--- Types a closed chat back into its own tab, when its agent quit there and
--- the tab is an idle shell again. Returns whether it did.
-local function reopen_in_tab(chat)
-  if not chat.block_id then return false end
-  for _, p in ipairs(snapshot.collect().panes) do
-    if p.block_id == chat.block_id then
-      if p.kind ~= "shell" or restore.run({ panes = { chat } }, { tries = 1 }).agents ~= 1 then return false end
-      rex.session.focus_block{ session_id = p.session_id, block_id = p.block_id }
-      return true
+-- Brings one chat back, trying the sessions in order (nil and "" skipped):
+-- in its own tab if that is an idle shell and its session comes first, else
+-- in its old place beside its neighbour pane, else in a new tab. Returns
+-- where it went ("its tab", "its old place", "a new tab"), or nil and an error.
+local function bring_back(chat, sessions)
+  local first = sessions[1]
+  if (first == nil or first == chat.session_id) and restore.into_tab(chat) then return "its tab" end
+  local err
+  for i = 1, 3 do
+    local session_id = sessions[i]
+    if type(session_id) == "string" and session_id ~= "" then
+      local opened, kind = restore.open(chat, session_id)
+      if opened then return kind == "split" and "its old place" or "a new tab" end
+      err = kind
     end
   end
-  return false
+  return nil, err
+end
+
+-- The chats of an earlier save (from=) that aren't open now, or those of
+-- them in only=: each in its own session, else the one the person is in.
+local function reopen_from()
+  local saved = earlier(args.from)
+  if not saved then return tell("No save " .. tostring(args.from) .. ".") end
+  local wanted, todo, n = only(), {}, 0
+  for _, item in ipairs(restore.pending(saved, { programs = false })) do
+    if not wanted or wanted[item.key] then todo[item.key] = true end
+  end
+  for _, p in ipairs(saved.panes) do
+    local key = restore.key(p)
+    if key and todo[key] then
+      todo[key] = nil
+      local how, err = bring_back(p, { p.session_id, args.session, first_session() })
+      if how then
+        n = n + 1
+        util.log("reopened " .. key .. " from the save of " .. saved.saved_at .. " in " .. how)
+      else
+        util.log("couldn't reopen " .. key .. ": " .. tostring(err))
+      end
+    end
+  end
+  tell("Reopened " .. count(n, "chat") .. " from the save of " .. saved.saved_at .. ".")
 end
 
 -- A closed chat (key=, else the newest), in the session the person is in
--- (session=, else the chat's own, else the first one): in its own tab if that
--- is an idle shell, else in its old place beside its neighbour pane, else in a new tab.
+-- (session=, else the chat's own, else the first one). from= reopens from an earlier save instead.
 local function reopen_mode()
+  if args.from then return reopen_from() end
   local chat
   for _, c in ipairs(closed_chats()) do
     if not args.key or c.key == args.key then
@@ -302,16 +394,7 @@ local function reopen_mode()
     end
   end
   if not chat then return tell("No closed chats to reopen.") end
-  local how, err
-  if (not args.session or args.session == chat.session_id) and reopen_in_tab(chat) then how = "its tab" end
-  local function try(session_id)
-    if how or type(session_id) ~= "string" or session_id == "" then return end
-    local opened, kind = restore.open(chat, session_id)
-    if opened then how = kind == "split" and "its old place" or "a new tab" else err = kind end
-  end
-  try(args.session)
-  try(chat.session_id)
-  if not how then try(first_session()) end
+  local how, err = bring_back(chat, { args.session or chat.session_id, chat.session_id, first_session() })
   if not how then return tell("Couldn't reopen " .. chat.key .. ": " .. tostring(err)) end
   -- Out of the list now, so a second press reopens the next one.
   closed.update(CLOSED_FILE, {}, { [chat.key] = true })
@@ -369,6 +452,9 @@ local MODES = {
   choices = choices_mode,
   closed = closed_mode,
   reopen = reopen_mode,
+  history = history_mode,
+  preview = preview_mode,
+  focus = focus_mode,
   settings = settings_mode,
   version = function() print("rex-revive " .. VERSION) end,
   restore = function()
@@ -384,6 +470,6 @@ local MODES = {
 local mode = MODES[args.mode or "watch"]
 if not mode then
   error("unknown mode " .. tostring(args.mode)
-        .. "; use watch, save, restore, choices, closed, reopen, settings, status, or version", 0)
+        .. "; use watch, save, restore, choices, closed, reopen, history, preview, focus, settings, status, or version", 0)
 end
 mode()

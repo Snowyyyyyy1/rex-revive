@@ -6,7 +6,7 @@
 #
 # [INPUT]: depends on the paths install.sh writes
 # [OUTPUT]: removes the login service and its log, the app, the palette actions, the pi extension,
-#           the Gemini and Droid hooks (with jq), the amp plugin, and their records
+#           the Gemini and Droid hooks (with jq), the amp and opencode plugins, and their records
 # [POS]: the exact inverse of install.sh; it leaves init.lua for you to edit.
 # [PROTOCOL]: Update this header on change, then check CLAUDE.md
 set -eu
@@ -41,8 +41,9 @@ fi
 rm -rf "$app"
 rm -f "$config/rex_revive.lua" "$HOME/.pi/agent/extensions/rex-revive.ts"
 rm -f "${XDG_CONFIG_HOME:-$HOME/.config}/amp/plugins/rex-revive.ts"
+rm -rf "${XDG_CONFIG_HOME:-$HOME/.config}/opencode/plugins/rex-revive"
 rm -rf "$HOME/.pi/agent/rex-revive" "$HOME/.gemini/rex-revive" "$HOME/.factory/rex-revive" \
-  "$HOME/.local/share/amp/rex-revive"
+  "$HOME/.local/share/amp/rex-revive" "$HOME/.local/share/opencode/rex-revive"
 # The SessionStart hooks install.sh --gemini and --droid added.
 for file in "$HOME/.gemini/settings.json" "$HOME/.factory/settings.json"; do
   [ -f "$file" ] && grep -q 'rex-revive.*agent-hook\.sh' "$file" || continue

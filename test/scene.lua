@@ -14,6 +14,7 @@ Sets up the sessions test/e2e.sh works with, on its throwaway Rex server only:
         tab 2  droid (new; its hook records it)
         tab 3  amp (new; its plugin records it)
         tab 4  cursor-agent (new; found by the chat store it holds)
+        tab 5  opencode (new; its TUI plugin records it)
 
 [INPUT]: depends on session.create from the Rex server API
 [OUTPUT]: the three sessions above; returns "ok"
@@ -45,5 +46,6 @@ assert(rex.call("session.create", { label = "side", initial_windows = { { layout
 assert(rex.call("session.create", { label = "more", initial_windows = {
   { layout = tab(q(a.bin .. "/gemini")) }, { layout = tab(q(a.bin .. "/droid")) }, { layout = tab(q(a.bin .. "/amp")) },
   { layout = tab(q(a.bin .. "/cursor-agent")) },
+  { layout = tab(q(a.bin .. "/opencode")) },
 } }))
 return "ok"

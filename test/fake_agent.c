@@ -16,12 +16,14 @@
  *   amp     HOME_DIR/.local/share/amp/rex-revive/<pid>.json, when the amp plugin
  *           is installed; its threads are T-<uuid>
  *   cursor-agent  holds HOME_DIR/.cursor/chats/<md5>/<id>/store.db open
+ *   opencode  HOME_DIR/.local/share/opencode/rex-revive/<pid>.json, when the opencode
+ *           TUI plugin is installed; its sessions are ses_<letters and digits>
  *
  * The session is the one on the command line (--resume ID, -r ID, resume ID,
  * --session ID, continue ID), else a new one made from the pid.
  *
  * [INPUT]: depends on POSIX only; AGENT, HOME_DIR, and HOOK (integrations/agent-hook.sh) are set at build time
- * [OUTPUT]: a fake claude, codex, pi, gemini, droid, amp, or cursor-agent binary
+ * [OUTPUT]: a fake claude, codex, pi, gemini, droid, amp, cursor-agent, or opencode binary
  * [POS]: the agents of test/e2e.sh. It never touches the real home folder.
  * [PROTOCOL]: Update this header on change, then check CLAUDE.md
  */
@@ -89,9 +91,11 @@ int main(int argc, char **argv) {
     if (!strcmp(argv[i], "--no-record")) record = 0;
     int names_session = !strcmp(argv[i], "--resume") || !strcmp(argv[i], "resume") ||
                         !strcmp(argv[i], "--session") || !strcmp(argv[i], "-r") ||
-                        !strcmp(argv[i], "continue");
+                        !strcmp(argv[i], "continue") || !strcmp(argv[i], "-s");
     if (names_session && i + 1 < argc) snprintf(session, sizeof session, "%s", argv[i + 1]);
   }
+  if (!session[0] && !strcmp(agent, "opencode"))
+    snprintf(session, sizeof session, "ses_fake%018d", (int)getpid());
   if (!session[0])
     snprintf(session, sizeof session, "%s00000000-0000-4000-8000-%012d", strcmp(agent, "amp") ? "" : "T-",
              (int)getpid());
@@ -129,11 +133,14 @@ int main(int argc, char **argv) {
     for (int i = 1; i < argc; i++) memset(argv[i], ' ', strlen(argv[i]));
   } else if (!strcmp(agent, "gemini") || !strcmp(agent, "droid")) {
     run_hook(agent, session);
-  } else if (!strcmp(agent, "amp")) {
+  } else if (!strcmp(agent, "amp") || !strcmp(agent, "opencode")) {
     char plugin[4096];
-    snprintf(plugin, sizeof plugin, "%s/.config/amp/plugins/rex-revive.ts", HOME_DIR);
+    int amp = !strcmp(agent, "amp");
+    snprintf(plugin, sizeof plugin, amp ? "%s/.config/amp/plugins/rex-revive.ts"
+                                        : "%s/.config/opencode/plugins/rex-revive/tui.js", HOME_DIR);
     if (access(plugin, R_OK) == 0) {
-      snprintf(dir, sizeof dir, "%s/.local/share/amp/rex-revive", HOME_DIR);
+      snprintf(dir, sizeof dir, amp ? "%s/.local/share/amp/rex-revive" : "%s/.local/share/opencode/rex-revive",
+               HOME_DIR);
       snprintf(text, sizeof text, "{\"pid\":%d,\"sessionId\":\"%s\",\"startedAt\":%lld}\n",
                (int)getpid(), session, started);
       put(dir, file, text);

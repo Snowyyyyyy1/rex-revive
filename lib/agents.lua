@@ -65,6 +65,9 @@ local function held_under(dir, pattern)
   end
 end
 
+-- An opencode session: ses_<letters and digits>.
+local function is_opencode(s) return type(s) == "string" and s:match("^ses_%w+$") ~= nil end
+
 local function set(...)
   local out = {}
   for _, word in ipairs({ ... }) do out[word] = true end
@@ -158,8 +161,16 @@ agents.REGISTRY = {
     },
     resume = function(exe, options, id) return { exe, options, "--resume", id } end,
   },
+  opencode = {
+    match = function(names) return names.opencode end,
+    valid = is_opencode,
+    records = "/.local/share/opencode/rex-revive",  -- integrations/opencode-rex-revive.js, a TUI plugin
+    from_argv = function(argv) return after(argv, set("-s", "--session"), is_opencode) end,
+    options = { values = set("--server"), switches = set("--standalone", "--auto") },
+    resume = function(exe, options, id) return { exe, options, "-s", id } end,
+  },
 }
-agents.ORDER = { "claude", "codex", "pi", "gemini", "droid", "amp", "cursor-agent" }
+agents.ORDER = { "claude", "codex", "pi", "gemini", "droid", "amp", "cursor-agent", "opencode" }
 
 -- Whether id can be a session of this agent.
 function agents.valid(agent, id)

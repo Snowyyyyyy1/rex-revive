@@ -86,11 +86,12 @@ pis() { pgrep -f "^$T/bin/pi" | wc -l | tr -d ' '; }  # pi blanks its arguments
 typed() { grep -c '  type ' "$1" || true; }
 json() { jq -e "$@" >/dev/null; }                     # a jq check, quietly
 
-for agent in claude codex pi gemini droid amp cursor-agent; do
+for agent in claude codex pi gemini droid amp cursor-agent opencode; do
   cc -O0 -o "$T/bin/$agent" -DAGENT="\"$agent\"" -DHOME_DIR="\"$H\"" \
     -DHOOK="\"$here/integrations/agent-hook.sh\"" "$here/test/fake_agent.c"
 done
-mkdir -p "$H/.pi/agent/extensions" "$H/.claude/sessions" "$H/.config/amp/plugins"
+mkdir -p "$H/.pi/agent/extensions" "$H/.claude/sessions" "$H/.config/amp/plugins" "$H/.config/opencode/plugins/rex-revive"
+cp "$here/integrations/opencode-rex-revive.js" "$H/.config/opencode/plugins/rex-revive/tui.js"
 cp "$here/integrations/pi-rex-revive.ts" "$H/.pi/agent/extensions/rex-revive.ts"
 cp "$here/integrations/amp-rex-revive.ts" "$H/.config/amp/plugins/rex-revive.ts"
 echo '{}' >"$H/.claude/sessions/notes.json"   # a record folder can hold other files
@@ -127,10 +128,12 @@ expect "gemini, by its SessionStart hook's record" has '^more 1\.1 agent gemini 
 expect "droid, by its SessionStart hook's record" has '^more 2\.1 agent droid 00000000-0000-4000-8000-'
 expect "amp, by its plugin's record" has '^more 3\.1 agent amp T-00000000-0000-4000-8000-'
 expect "cursor-agent, by the chat store it holds" has '^more 4\.1 agent cursor-agent 00000000-0000-4000-8000-'
+expect "opencode, by its TUI plugin's record" has '^more 5\.1 agent opencode ses_fake'
 GEMINI=$(field more 1.1)
 DROID=$(field more 2.1)
 AMP=$(field more 3.1)
 CURSOR=$(field more 4.1)
+OPENCODE=$(field more 5.1)
 
 echo "2. Restart: Rex brings back the tabs, rex-revive what ran in them"
 stop_server
@@ -170,6 +173,8 @@ expect "amp is back on its thread" has "^more 3\.1 agent amp $AMP\$"
 expect "amp's thread through threads continue" grep -q -- "/amp threads continue $AMP (run)" "$T/startup.log"
 expect "cursor-agent is back on its chat" has "^more 4\.1 agent cursor-agent $CURSOR\$"
 expect "cursor-agent's chat through --resume" grep -q -- "cursor-agent --resume $CURSOR (run)" "$T/startup.log"
+expect "opencode is back on its session" has "^more 5\.1 agent opencode $OPENCODE\$"
+expect "opencode's session through -s" grep -q -- "opencode -s $OPENCODE (run)" "$T/startup.log"
 
 echo "3. Again on the same server: nothing is typed twice"
 D mode=startup >"$T/startup2.log"
@@ -198,6 +203,17 @@ cat >"$H/.claude/projects/-fake/$CLAUDE.jsonl" <<JSON
 {"type":"user","message":{"role":"user","content":[{"type":"tool_result","content":"x"}]}}
 {"type":"user","message":{"role":"user","content":[{"type":"text","text":"Fix   the\nlogin bug"}]}}
 JSON
+mkdir -p "$H/.factory/sessions/-fake"
+printf '{"type":"session_start","id":"%s","title":"droid first prompt","sessionTitle":"droid first prompt"}\n' "$DROID" \
+  >"$H/.factory/sessions/-fake/$DROID.jsonl"
+CURSOR_CHAT="$H/.cursor/chats/0123456789abcdef0123456789abcdef/$CURSOR"
+sqlite3 "$CURSOR_CHAT/store.db" "create table blobs(id text primary key, data blob);
+  insert into blobs values('a', '{\"role\":\"user\",\"content\":\"<user_info>Answer the <user_query> below</user_info>\"}');
+  insert into blobs values('b', '{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"<timestamp>now</timestamp>\\n<user_query>\\ncursor *first* prompt\\n</user_query>\"}]}');"
+printf '{"updatedAtMs":%s000}\n' "$(date +%s)" >"$CURSOR_CHAT/meta.json"
+mkdir -p "$H/.local/share/opencode"
+sqlite3 "$H/.local/share/opencode/opencode.db" "create table session_v2(id text primary key, title text,
+  time_updated integer); insert into session_v2 values('$OPENCODE', 'opencode session title', strftime('%s', 'now') * 1000);"
 cat >"$H/.pi/agent/sessions/--fake--/2026-01-01T00-00-00-000Z_$PI.jsonl" <<JSON
 {"type":"session","id":"$PI"}
 {"type":"message","message":{"role":"system","content":[{"type":"text","text":"system"}]}}
@@ -221,11 +237,14 @@ expect "codex: the thread's name and last activity" test "$(title_of "codex:$COD
 expect "pi: its first prompt" test "$(title_of "pi:$PI")" = "pi first prompt | now"
 expect "gemini: its first prompt" test "$(title_of "gemini:$GEMINI")" = "gemini first prompt | now"
 expect "amp: the thread's title" test "$(title_of "amp:$AMP")" = "Amp thread title | now"
+expect "droid: its session_start title" test "$(title_of "droid:$DROID")" = "droid first prompt | now"
+expect "cursor-agent: its first user_query" test "$(title_of "cursor-agent:$CURSOR")" = "cursor first prompt | now"
+expect "opencode: the session's title" test "$(title_of "opencode:$OPENCODE")" = "opencode session title | now"
 expect "choices lists the saved chats" json --arg c "codex:$CODEX" --arg p "pi:$PI" --arg n "claude:$NEW_CLAUDE" \
   '[.[].key] | (index($c) != null) and (index($p) != null) and (index($n) != null)' "$T/choices.json"
-expect "choices lists chats only" json 'length == 10 and all(.[]; .agent != null and .session != null)' "$T/choices.json"
-# Five chats active now, codex 20 days ago, then four with no conversation file.
-expect "recently active chats come first" json --arg c "codex:$CODEX" '[.[].key] | index($c) == 5' "$T/choices.json"
+expect "choices lists chats only" json 'length == 11 and all(.[]; .agent != null and .session != null)' "$T/choices.json"
+# Eight chats active now, codex 20 days ago, then two with no conversation file.
+expect "recently active chats come first" json --arg c "codex:$CODEX" '[.[].key] | index($c) == 8' "$T/choices.json"
 expect "a chat idle over two weeks starts unticked" \
   json --arg c "codex:$CODEX" 'all(.[]; .ticked == (.key != $c))' "$T/choices.json"
 # The chat that ran outside Rex left its tab an idle shell, and the saves since
@@ -256,11 +275,13 @@ expect "the watcher started" grep -q watching "$T/watch.log"
 stop_server
 start_server
 up=$(date +%s)
-for _ in $(seq 1 60); do grep -q 'Reopened [1-9]' "$T/watch.log" && break; sleep 0.5; done
+for _ in $(seq 1 60); do grep -q 'new Rex server; bringing back' "$T/watch.log" && break; sleep 0.25; done
 took=$(($(date +%s) - up))
+# launchd and systemd alone would restart the watcher only after 10 s. Typing
+# the chats back takes longer the more there are, so it isn't timed here.
+expect "the watcher saw the new server within 3 s (took ${took}s)" test "$took" -le 3
+for _ in $(seq 1 60); do grep -q 'Reopened [1-9]' "$T/watch.log" && break; sleep 0.5; done
 expect "the watcher brought the chats back" grep -q 'Reopened [1-9]' "$T/watch.log"
-# launchd and systemd alone would restart the watcher only after 10 s.
-expect "within 6 s of the server (took ${took}s)" test "$took" -le 6
 expect "the log says the server stopped" grep -q "the Rex server stopped; waiting for it to start again" "$T/watch.log"
 sleep 3
 D mode=save
@@ -277,7 +298,7 @@ sed -e "s|@REX@|$REX|" -e "s|@SCRIPT@|$here/revive.lua|" -e "s|@LOG@|$T/palette.
   "$here/integrations/rex_revive.lua" >"$T/rex_revive.lua"
 printf 'package.path = "%s/?.lua;" .. package.path\nrequire("rex_revive")\n' "$T" >"$T/check.lua"
 expect "rex config check passes" sh -c "'$REX' config check '$T/check.lua' >'$T/check.log' 2>&1"
-expect "it defines six actions" grep -q '^actions: 6$' "$T/check.log"
+expect "it defines eight actions" grep -q '^actions: 8$' "$T/check.log"
 expect "it binds shift+cmd+t" grep -q '^bindings: 1$' "$T/check.log"
 printf 'rex.bind("shift+cmd+t", "pane.zoom")\n' | cat - "$T/check.lua" >"$T/check2.lua"
 "$REX" config check "$T/check2.lua" >"$T/check2.log" 2>&1 || true
@@ -355,6 +376,25 @@ start_server
 close_tab work 6
 D mode=startup >"$T/startup4.log"
 expect "a chat whose tab is gone after a restart is closed" grep -q "claude:$PAIR_B" "$T/saves/closed.json"
+
+echo "9. Preview a restart, and reopen chats from an earlier save"
+D mode=preview | tail -1 >"$T/preview.json"
+expect "the preview shows codex's resume command, run" json --arg k "codex:$CODEX" \
+  'any(.[]; .key == $k and .runs == true and (.typed | endswith("resume " + ($k | ltrimstr("codex:")))))' "$T/preview.json"
+expect "and where each one sits" json 'all(.[]; .session_id != null and .block_id != null and .where != null)' "$T/preview.json"
+expect "the first save was kept in the history" sh -c "ls '$T/saves/snapshots/history/'*.json >/dev/null"
+D mode=history | tail -1 >"$T/history.json"
+FROM=$(jq -r 'last(.[] | select(.chats > 0)) | .id' "$T/history.json")
+expect "the history lists saves with chats to reopen" test -n "$FROM" -a "$FROM" != null
+D mode=choices "from=$FROM" | tail -1 >"$T/from.json"
+expect "an earlier save offers the chat closed since" json --arg k "claude:$PAIR_B" '[.[].key] | index($k) != null' "$T/from.json"
+expect "and not the chats open now" json --arg k "codex:$CODEX" '[.[].key] | index($k) == null' "$T/from.json"
+D mode=reopen "from=$FROM" "only=claude:$PAIR_B" >"$T/from.log"
+sleep 3
+expect "only= reopens just that chat" grep -q "Reopened 1 chat from the save of" "$T/from.log"
+expect "and it runs again" test "$(running "$T/bin/claude --resume $PAIR_B")" = 1
+D mode=focus "session=$(jq -r '.[0].session_id' "$T/preview.json")" "block=$(jq -r '.[0].block_id' "$T/preview.json")"
+expect "focus shows a tab" test $? = 0
 
 echo
 echo "$passed passed, $failed failed"

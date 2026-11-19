@@ -159,8 +159,20 @@ check("cursor-agent by the chat store it holds, no secret options kept", agents.
   { agent = "cursor-agent", session = ID, options = { "--model", "gpt-5", "-f" }, exe = "cursor-agent", file = store })
 check("cursor-agent by --resume on its command line", agents.identify({ pid = 54, argv0 = "cursor-agent" },
   info(54, "cursor-agent --resume=" .. ID2, {}), { home = "/h" }).session, ID2)
+local OC = "ses_e0d0eac12ffe2gSWl3289wKaRU"
+local oc_rec = "/h/.local/share/opencode/rex-revive/55.json"
+check("opencode by its TUI plugin's record", agents.identify({ pid = 55, argv0 = "opencode" },
+  info(55, "opencode --auto"), { home = "/h", reader = record_at(oc_rec, { pid = 55, sessionId = OC,
+  startedAt = (NOW - 60) * 1000 }) }), { agent = "opencode", session = OC, options = { "--auto" }, exe = "opencode" })
+check("opencode by -s, and only a ses_ ID", {
+  agents.identify({ pid = 55, argv0 = "opencode" }, info(55, "opencode -s " .. OC), { home = "/h", reader = record_at("", nil) }).session,
+  agents.valid("opencode", ID), agents.valid("opencode", "ses_x'; drop") }, { OC, false, false })
+check("opencode resume command", agents.command({ agent = "opencode", session = OC, options = { "--auto" } }),
+  { "opencode", "--auto", "-s", OC })
 check("cursor-agent resume command", agents.command({ agent = "cursor-agent", session = ID, options = { "--trust" } }),
   { "cursor-agent", "--trust", "--resume", ID })
+
+check("epoch reads what iso writes", { util.epoch(util.iso(1795076244)), util.epoch("not a time") }, { 1795076244 })
 
 ---------------------------------------------------------------------------
 -- snapshot: what a tab runs

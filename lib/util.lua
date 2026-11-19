@@ -1,6 +1,6 @@
 --[[
 [INPUT]: depends on rex.exec and rex.json from the Rex Lua API; on io and os from Lua 5.1
-[OUTPUT]: exports util: files and JSON, directory listing, command output, shell quoting, times,
+[OUTPUT]: exports util: files and JSON, directory listing, command output, shell quoting, times (iso, epoch),
           the state directory, notifications, logging
 [POS]: the base layer of lib/. Every other module calls it. Its only knowledge of rex-revive
        is where the state lives and the notification title.
@@ -33,6 +33,19 @@ end
 -- A time as UTC ISO 8601, which sorts as text. Now, when t is nil.
 function util.iso(t) return os.date("!%Y-%m-%dT%H:%M:%SZ", t) end
 function util.now_iso() return util.iso(os.time()) end
+
+-- The seconds since 1970 of a time util.iso wrote, or nil. os.time reads a
+-- table as local time, so add the local offset back.
+function util.epoch(iso)
+  local y, mo, d, h, mi, s = tostring(iso or ""):match("^(%d+)%-(%d+)%-(%d+)T(%d+):(%d+):(%d+)Z$")
+  if not y then return nil end
+  local fields = { year = tonumber(y), month = tonumber(mo), day = tonumber(d),
+                   hour = tonumber(h), min = tonumber(mi), sec = tonumber(s), isdst = false }
+  local now = os.time()
+  local utc_now = os.date("!*t", now)
+  utc_now.isdst = false
+  return os.time(fields) + (now - os.time(utc_now))
+end
 
 -- A timestamped line on stdout, and appended to util.log_file when a run sets
 -- it: a run started from the command palette has no stdout anyone reads.

@@ -3,19 +3,19 @@ Lua 5.1 (Rex's embedded runtime, `rex do`) + POSIX sh + TypeScript (pi extension
 
 <directory>
 lib/ - the engine: process facts, agent registry, snapshots, restore planning and typing, chat titles, closed chats (7 modules)
-integrations/ - code that runs inside other programs: the Rex config palette actions, the pi extension, the Gemini CLI and Droid hook, the amp plugin (4 files)
+integrations/ - code that runs inside other programs: the Rex config palette actions, the pi extension, the Gemini CLI and Droid hook, the amp and opencode plugins (5 files)
 test/ - unit tests in Rex Lua, end-to-end test on a throwaway Rex server, fake agents (4 files)
 </directory>
 
 <config>
-revive.lua - the entry point: `rex do revive.lua [--all] mode=…`; owns arguments, settings.json (the person's choices), state.json, closed.json's path, the once-per-server restore, and the order and ticks of a question's rows
+revive.lua - the entry point: `rex do revive.lua [--all] mode=…`; owns arguments, settings.json (the person's choices), state.json, closed.json's path, the once-per-server restore, the order and ticks of a question's rows (every question lists from a save, never from the tabs, which may still be starting), and the history and preview modes
 service.sh - the login service's command: runs the watcher, restarts it within 1 s of the server's return (launchd/systemd alone wait 10 s), and logs why the watcher stopped
-install.sh - installs the app, the launchd/systemd watcher, the palette actions, and with --pi the pi extension
+install.sh - installs the app, the launchd/systemd watcher, the palette actions, and with --pi, --gemini, --droid, --amp, --opencode what records each agent's session
 uninstall.sh - the exact inverse of install.sh; --purge also deletes the saves
 README.md - the user's manual
 </config>
 
-Data flow: Rex view + `terminal.process` + ps/lsof → `snapshot.collect` → snap on disk (non-shell panes only; the chats the last save had and this one lacks go to `closed.json`) → after a restart `restore.pending` (chats, then programs) → `titles.label` and revive.lua's ranking → the question in the Rex app (`revive_choose`; skipped when settings.json says ask=false or there is no chat; no answer means everything) → `restore.plan` (pure) → `restore.run` types into idle shells → the chats it didn't bring back go to `closed.json`. A closed chat comes back through `mode=reopen`: typed into its own tab when that is an idle shell (its agent quit), else `restore.open` → a new pane in its old place (`place`, the split it sat in, recorded by `snapshot.collect`) or a new tab, whose `initial_input` is the resume command. Palette runs append to the watcher's log through `log=`.
+Data flow: Rex view + `terminal.process` + ps/lsof → `snapshot.collect` → snap on disk (non-shell panes only; the chats the last save had and this one lacks go to `closed.json`) → after a restart `restore.pending` (chats, then programs) → `titles.label` and revive.lua's ranking → the question in the Rex app (`revive_choose`; skipped when settings.json says ask=false or there is no chat; no answer means everything) → `restore.plan` (pure) → `restore.run` types into idle shells → the chats it didn't bring back go to `closed.json`. A closed chat comes back through `mode=reopen`: `restore.into_tab` types it into its own tab when one process call shows an idle shell there (its agent quit), else `restore.open` → a new pane in its old place (`place`, the split it sat in, recorded by `snapshot.collect`) or a new tab, whose `initial_input` is the resume command. Every save also goes to `snapshots/history/` (every 30 min at most, when changed); `mode=reopen from=<id>` brings back the chats of such an earlier save that aren't open. `mode=preview` lists what a restart would bring back now, from a fresh collect. Palette runs append to the watcher's log through `log=`.
 
 Invariants:
 - A chat is "agent:session". Only an idle shell is typed into. A chat open anywhere is never opened again.
