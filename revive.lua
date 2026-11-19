@@ -10,6 +10,7 @@ the Rex server restarts.
   rex do revive.lua mode=version
 
 Common arguments: state_dir=DIR (where saves go), palette=true (also notify), notify=false.
+Watch arguments: rex=PATH (the rex command, to ask in the Rex app), ask=false (never ask).
 
 [INPUT]: depends on lib/util, lib/snapshot, lib/restore from this repository; rex.args, rex.on,
          rex.after, rex.every, rex.call from the Rex Lua API
@@ -22,10 +23,11 @@ Common arguments: state_dir=DIR (where saves go), palette=true (also notify), no
 local args = rex.args or {}
 
 -- lib/ sits next to this file; root=DIR overrides it when a run can't tell.
+-- Rex gives the script path with or without Lua's usual "@" prefix.
 local function root()
   if args.root then return args.root end
-  local source = debug.getinfo(1, "S").source
-  return source:match("^@(.*)/[^/]*$") or "."
+  local source = debug.getinfo(1, "S").source:gsub("^@", "")
+  return source:match("^(.*)/[^/]*$") or "."
 end
 package.path = root() .. "/lib/?.lua;" .. package.path
 
@@ -40,6 +42,8 @@ local STATE_FILE = STATE_DIR .. "/state.json"
 local MAX_AGE_DAYS = 30   -- an older save is never restored on its own
 local SAVE_EVERY = 60     -- seconds between saves while watching, at the least
 local SAVE_AFTER = 3      -- seconds to wait after a change before saving
+local APP_WAIT = 20       -- seconds to wait for a Rex app to connect after a restart
+local ASK_WAIT = 60       -- seconds to wait for an answer before reopening every chat
 
 -- notify=false keeps a run quiet (the tests use it).
 local function notify(message)
@@ -70,10 +74,51 @@ local function source(instance)
   return snapshot.previous(SNAPS, instance) or snapshot.all(SNAPS)[1]
 end
 
+local function count(n, noun)
+  return string.format("%d %s%s", n, noun, n == 1 and "" or "s")
+end
+
 local function report(result)
-  local text = string.format("Reopened %d chats", result.agents)
-  if result.programs > 0 then text = text .. string.format(" and typed %d other programs", result.programs) end
+  local text = "Reopened " .. count(result.agents, "chat")
+  if result.programs > 0 then text = text .. " and typed " .. count(result.programs, "other program") end
   return text .. "."
+end
+
+local function app_connected()
+  for _ = 1, APP_WAIT / 2 do
+    for _, c in ipairs(util.list((rex.call("client.list") or {}).clients)) do
+      if c.info and c.info.kind == "app" then return true end
+    end
+    rex.sleep(2)
+  end
+  return false
+end
+
+-- After a restart, ask in the Rex app which chats to reopen, through the
+-- revive_choose action of integrations/rex_revive.lua. Returns the chats to
+-- leave closed, or nil unless someone pressed Reopen: then every chat comes
+-- back. A closed question counts as no answer, as the app can close it unseen.
+local function ask(saved)
+  if args.ask == false then return nil end
+  local chats = restore.chats(saved)
+  if #chats == 0 or not app_connected() then return nil end
+  util.log("asking in the Rex app which of " .. #chats .. " chats to reopen")
+  local out = util.stdout({ args.rex or "rex", "--autostart=false", "do", "revive_choose",
+                            "--args", rex.json.encode({ chats = chats }), "--timeout", ASK_WAIT .. "s" },
+                          { timeout = ASK_WAIT + 10 })
+  local ok, answer = pcall(rex.json.decode, out:match("([^\n]+)\n*$") or "")
+  if not ok or type(answer) ~= "table" or type(answer.keys) ~= "table" then
+    util.log("no answer (" .. tostring(type(answer) == "table" and answer.status or "none")
+             .. "); reopening every chat")
+    return nil
+  end
+  local chosen, leave = {}, {}
+  for _, key in ipairs(answer.keys) do chosen[key] = true end
+  for _, c in ipairs(chats) do
+    if not chosen[c.key] then leave[c.key] = true end
+  end
+  util.log(string.format("reopening %d of %d chats, as chosen", #answer.keys, #chats))
+  return leave
 end
 
 -- Once per server instance: bring back the save of the server before it.
@@ -92,9 +137,11 @@ local function startup()
     return save()
   end
   util.log("new Rex server; bringing back the save from " .. saved.saved_at)
-  local result = restore.run(saved, { programs = args.programs })
+  local leave = ask(saved)
+  local result = restore.run(saved, { programs = args.programs, leave = leave })
   util.log(report(result))
-  if result.agents + result.programs > 0 then notify(report(result)) end
+  -- Someone who pressed Reopen knows what comes back; tell the others.
+  if not leave and result.agents + result.programs > 0 then notify(report(result)) end
   state.last_restore = { at = util.now_iso(), from = saved.saved_at, instance = status.instance_id,
                          agents = result.agents, programs = result.programs }
   util.write_json(STATE_FILE, state)

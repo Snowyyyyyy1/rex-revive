@@ -31,7 +31,8 @@ passed=0 failed=0 server_pid="" watch_pid=""
 
 clean_env() { env -u REX_SESSION -u REX_BLOCK -u REX_SERVER -u REX_CLIENT -u REX_CONFIG "$@"; }
 R() { clean_env "$REX" --autostart=false -S "$SOCK" "$@"; }
-D() { HOME="$H" R do "$here/revive.lua" "state_dir=$T/saves" notify=false "$@"; }
+# Run from / so revive.lua must find lib/ from its own path, as it does when installed.
+D() { (cd / && HOME="$H" R do "$here/revive.lua" "state_dir=$T/saves" notify=false ask=false "$@"); }
 
 start_server() {
   # env, not the clean_env function: $! must be the server itself, so that
@@ -184,10 +185,11 @@ expect "one codex on its chat" test "$(running "$T/bin/codex resume $CODEX")" = 
 echo "5. The watcher, run like a login service, brings everything back by itself"
 touch "$T/supervise"
 (
+  cd /
   while [ -e "$T/supervise" ]; do
     HOME="$H" env -u REX_SESSION -u REX_BLOCK -u REX_SERVER -u REX_CLIENT -u REX_CONFIG \
       "$REX" --autostart=false -S "$SOCK" do "$here/revive.lua" --all \
-      "state_dir=$T/saves" notify=false >>"$T/watch.log" 2>&1 &
+      "state_dir=$T/saves" notify=false ask=false >>"$T/watch.log" 2>&1 &
     echo $! >"$T/watch.pid"
     wait $! || true
     sleep 1

@@ -193,6 +193,19 @@ check("plan: skip= tabs typed into before", #restore.plan(saved, idle, {}, { dir
 local twice = { panes = { saved.panes[1], pane{ block_id = "b2", window_index = 2, kind = "agent",
   agent = "claude", session = ID } } }
 check("plan: one chat saved in two tabs opens once", #restore.plan(twice, idle, {}, { dir_exists = yes }), 1)
+check("plan: leave= keeps those chats closed, programs still typed", texts(restore.plan(saved, idle, {},
+  { leave = { ["claude:" .. ID] = true }, dir_exists = yes })),
+  { "b2=cd /q && pi --session " .. ID2 .. "\n", "b3=npm run dev" })
+local none_open = { home = "/nonexistent-rex-revive-home" }
+check("chats: the saved chats, once each, programs left out",
+  (function()
+    local out = {}
+    for _, c in ipairs(restore.chats({ panes = { twice.panes[1], twice.panes[2], saved.panes[2], saved.panes[3] } },
+                                     none_open)) do
+      out[#out + 1] = c.key .. " @ " .. c.where
+    end
+    return out
+  end)(), { "claude:" .. ID .. " @ work tab 1 pane 1", "pi:" .. ID2 .. " @ work tab 2 pane 1" })
 check("plan: quoting", restore.text({ kind = "agent", agent = "claude", session = ID, options = { "--add-dir", "my dir" } }),
   "claude --add-dir 'my dir' --resume " .. ID .. "\n")
 

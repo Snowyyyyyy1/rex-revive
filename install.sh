@@ -82,6 +82,7 @@ if [ "$service" = 1 ] && [ "$os" = Darwin ]; then
     <string>do</string>
     <string>$(xml "$script")</string>
     <string>--all</string>
+    <string>rex=$(xml "$rex")</string>
   </array>
   <key>EnvironmentVariables</key><dict><key>PATH</key><string>$(xml "$path")</string></dict>
   <key>RunAtLoad</key><true/>
@@ -104,7 +105,7 @@ elif [ "$service" = 1 ] && command -v systemctl >/dev/null 2>&1; then
 Description=rex-revive: bring back the agents in your Rex tabs after a restart
 
 [Service]
-ExecStart="$rex" --autostart=false do "$script" --all
+ExecStart="$rex" --autostart=false do "$script" --all "rex=$rex"
 Restart=always
 RestartSec=10
 Environment="PATH=$path"

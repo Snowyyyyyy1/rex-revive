@@ -26,13 +26,17 @@ cd rex-revive
 - `--pi` installs a small pi extension (see [pi](#pi)). Leave it out if you don't use pi.
 - `--no-service` copies the files without starting the watcher.
 
+Without `--add-to-config` and the `require` line, the question after a restart can't be shown, and every chat comes back on its own.
+
 The installer copies rex-revive to `~/Library/Application Support/rex-revive/app` (macOS) or `~/.local/share/rex-revive` (Linux) and starts it as a login service: a launchd agent, or a systemd user service. Run `./install.sh` again to update.
 
 Requirements: Rex with a recent Lua API (control API revision 17 or later for **Choose Chats to Reopen…**), and `lsof`.
 
 ## Using it
 
-There is nothing to do day to day. rex-revive saves what runs in each tab a few seconds after any change, and at least once a minute. When the Rex server starts again, it brings everything back within seconds and shows a notification such as "Reopened 6 chats."
+There is nothing to do day to day. rex-revive saves what runs in each tab a few seconds after any change, and at least once a minute.
+
+When the Rex server starts again, the Rex app asks **Rex restarted · Reopen chats**, with every saved chat ticked. Untick what you don't want and press **Reopen**. If you close the question, or don't answer within a minute, or no Rex app is open, every chat comes back, and a notification such as "Reopened 6 chats." says so. Rex has no way for a script to show a notice inside the app, so that notification is the system's.
 
 From the command palette (search for "revive"):
 

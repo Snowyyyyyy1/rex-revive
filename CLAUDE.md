@@ -14,10 +14,11 @@ uninstall.sh - the exact inverse of install.sh; --purge also deletes the saves
 README.md - the user's manual
 </config>
 
-Data flow: Rex view + `terminal.process` + ps/lsof → `snapshot.collect` → snap on disk (non-shell panes only) → after a restart `restore.plan` (pure) → `restore.run` types into idle shells.
+Data flow: Rex view + `terminal.process` + ps/lsof → `snapshot.collect` → snap on disk (non-shell panes only) → after a restart `restore.chats` → the question in the Rex app (`revive_choose`; no answer means every chat) → `restore.plan` (pure) → `restore.run` types into idle shells.
 
 Invariants:
 - A chat is "agent:session". Only an idle shell is typed into. A chat open anywhere is never opened again.
+- Only a Reopen press narrows a restore. A closed question, a timeout, or no Rex app reopens every chat: the app can close a question nobody saw.
 - A pid record counts only when its startedAt matches the process's start (pids are reused). Claude's procStart text is never trusted: it can be off by the time zone.
 - Agents are data: a new agent is one entry in `lib/agents.lua` REGISTRY.
 - Nothing outside test/ starts or kills processes, except the watcher's own lifecycle.

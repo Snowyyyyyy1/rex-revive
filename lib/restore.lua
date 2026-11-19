@@ -1,7 +1,8 @@
 --[[
 [INPUT]: depends on rex.block and rex.sleep from the Rex Lua API; lib/util; lib/agents; lib/snapshot
 [OUTPUT]: exports restore: key(pane), text(pane), plan(saved, live, running, opts) (pure);
-          running(saved, opts) -> open chat set; run(saved, opts) -> { agents, programs }
+          running(saved, opts) -> open chat set; chats(saved, opts) -> the saved chats not open;
+          run(saved, opts) -> { agents, programs }
 [POS]: the writer side of rex-revive, and the only module that types into terminals.
        plan decides; run collects, plans, types, and tries again while restored tabs settle.
 [PROTOCOL]: Update this header on change, then check CLAUDE.md
@@ -42,6 +43,7 @@ end
 --   saved, live  snaps (saved: the panes to bring back; live: every pane now)
 --   running      { ["agent:session"] = true } for chats open anywhere
 --   opts.only    { [key] = true }: just these chats, nothing else
+--   opts.leave   { [key] = true }: chats not to reopen, as someone chose
 --   opts.programs  false: chats only
 --   opts.skip    { [block_id] = true }: typed into on an earlier try
 --   opts.dir_exists  (tests replace it)
@@ -66,6 +68,7 @@ function restore.plan(saved, live, running, opts)
     local key, text = restore.key(p), restore.text(p)
     local wanted = text and (p.kind == "agent" or opts.programs ~= false)
       and (not opts.only or (key and opts.only[key]))
+      and not (key and opts.leave and opts.leave[key])
     if wanted then
       local target = by_block[p.block_id] or by_position[position(p) or ""]
       if not target then
@@ -105,8 +108,23 @@ function restore.running(saved, opts)
   return agents.running(held, opts)
 end
 
+-- The saved chats that aren't open anywhere, one entry per chat, in save order.
+-- It looks at the save only, not at tabs, so it works while restored tabs
+-- are still starting.
+function restore.chats(saved, opts)
+  local open, out = restore.running(saved, opts), {}
+  for _, p in ipairs(util.list(saved and saved.panes)) do
+    local key = restore.key(p)
+    if key and not open[key] then
+      open[key] = true
+      out[#out + 1] = { key = key, agent = p.agent, session = p.session, cwd = p.cwd, where = where(p) }
+    end
+  end
+  return out
+end
+
 -- Bring the saved panes back into the tabs Rex shows now.
---   opts: dry_run, only, programs, tries, home, reader (passed to collect)
+--   opts: dry_run, only, leave, programs, tries, home, reader (passed to collect)
 -- Tabs Rex has just restored may still be starting their shells, which can
 -- look busy, so it plans again for a while. A tab is typed into at most once.
 function restore.run(saved, opts)
@@ -120,7 +138,7 @@ function restore.run(saved, opts)
     local running = restore.running(saved, opts)
     for key in pairs(typed) do running[key] = true end
     local actions, notes, busy = restore.plan(saved, live, running,
-      { only = opts.only, programs = opts.programs, skip = done })
+      { only = opts.only, leave = opts.leave, programs = opts.programs, skip = done })
     for _, a in ipairs(actions) do
       util.log(string.format("  %s %s: %s", opts.dry_run and "would type" or "type", a.where,
                              (a.text:gsub("\n$", " (run)"))))
