@@ -53,10 +53,13 @@ stop_server() {
   server_pid=""
   sleep 1
 }
+# watch_pid is service.sh; stop it first so it can't start rex do again, then its rex do.
 stop_watcher() {
-  rm -f "$T/supervise"
-  [ -f "$T/watch.pid" ] && kill "$(cat "$T/watch.pid")" 2>/dev/null || true
-  [ -n "$watch_pid" ] && { kill "$watch_pid" 2>/dev/null || true; wait "$watch_pid" 2>/dev/null || true; }
+  [ -n "$watch_pid" ] || return 0
+  kids=$(pgrep -P "$watch_pid" || true)
+  kill "$watch_pid" 2>/dev/null || true
+  [ -n "$kids" ] && kill $kids 2>/dev/null || true
+  wait "$watch_pid" 2>/dev/null || true
   watch_pid=""
 }
 cleanup() {
@@ -183,25 +186,23 @@ listing=$(show)
 expect "one codex on its chat" test "$(running "$T/bin/codex resume $CODEX")" = 1
 
 echo "5. The watcher, run like a login service, brings everything back by itself"
-touch "$T/supervise"
 (
   cd /
-  while [ -e "$T/supervise" ]; do
-    HOME="$H" env -u REX_SESSION -u REX_BLOCK -u REX_SERVER -u REX_CLIENT -u REX_CONFIG \
-      "$REX" --autostart=false -S "$SOCK" do "$here/revive.lua" --all \
-      "state_dir=$T/saves" notify=false ask=false >>"$T/watch.log" 2>&1 &
-    echo $! >"$T/watch.pid"
-    wait $! || true
-    sleep 1
-  done
+  HOME="$H" REX_SERVER="$SOCK" exec env -u REX_SESSION -u REX_BLOCK -u REX_CLIENT -u REX_CONFIG \
+    sh "$here/service.sh" "$REX" "$here/revive.lua" "state_dir=$T/saves" notify=false ask=false \
+    >>"$T/watch.log" 2>&1
 ) &
 watch_pid=$!
 for _ in $(seq 1 20); do grep -q watching "$T/watch.log" 2>/dev/null && break; sleep 0.5; done
 expect "the watcher started" grep -q watching "$T/watch.log"
 stop_server
 start_server
+up=$(date +%s)
 for _ in $(seq 1 60); do grep -q 'Reopened [1-9]' "$T/watch.log" && break; sleep 0.5; done
+took=$(($(date +%s) - up))
 expect "the watcher brought the chats back" grep -q 'Reopened [1-9]' "$T/watch.log"
+# launchd and systemd alone would restart the watcher only after 10 s.
+expect "within 6 s of the server (took ${took}s)" test "$took" -le 6
 sleep 3
 D mode=save
 listing=$(show)

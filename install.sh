@@ -9,7 +9,7 @@
 #
 # Remove it with ./uninstall.sh.
 #
-# [INPUT]: depends on revive.lua, lib/, integrations/ of this repository; launchd or systemd
+# [INPUT]: depends on revive.lua, lib/, service.sh, integrations/ of this repository; launchd or systemd
 # [OUTPUT]: the installed app, a login service, ~/.config/rex/rex_revive.lua, and with --pi the pi extension
 # [POS]: the only installer; uninstall.sh undoes each step it takes.
 # [PROTOCOL]: Update this header on change, then check CLAUDE.md
@@ -49,12 +49,13 @@ find_rex() {
 rex=$(find_rex) || fail "can't find the rex command; open Rex once, or run REX=/path/to/rex ./install.sh"
 say "Using rex: $rex"
 
-# The files: revive.lua and lib/, replaced as a whole so no old module stays behind.
+# The files: revive.lua, service.sh, and lib/, replaced as a whole so no old module stays behind.
 mkdir -p "$app"
 rm -rf "$app/lib.new" && mkdir "$app/lib.new"
 cp "$here"/lib/*.lua "$app/lib.new/"
 rm -rf "$app/lib" && mv "$app/lib.new" "$app/lib"
 cp "$here/revive.lua" "$script.new" && mv "$script.new" "$script"
+cp "$here/service.sh" "$app/service.sh.new" && chmod +x "$app/service.sh.new" && mv "$app/service.sh.new" "$app/service.sh"
 say "Installed $script"
 
 # The service's PATH: where the agents and lsof live.
@@ -77,12 +78,10 @@ if [ "$service" = 1 ] && [ "$os" = Darwin ]; then
   <key>Label</key><string>$label</string>
   <key>ProgramArguments</key>
   <array>
+    <string>/bin/sh</string>
+    <string>$(xml "$app/service.sh")</string>
     <string>$(xml "$rex")</string>
-    <string>--autostart=false</string>
-    <string>do</string>
     <string>$(xml "$script")</string>
-    <string>--all</string>
-    <string>rex=$(xml "$rex")</string>
   </array>
   <key>EnvironmentVariables</key><dict><key>PATH</key><string>$(xml "$path")</string></dict>
   <key>RunAtLoad</key><true/>
@@ -95,6 +94,11 @@ if [ "$service" = 1 ] && [ "$os" = Darwin ]; then
 </plist>
 EOF
   launchctl bootout "gui/$(id -u)/$label" 2>/dev/null || true
+  # bootout returns before the old job is gone, and bootstrap fails (error 5) until it is.
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    launchctl print "gui/$(id -u)/$label" >/dev/null 2>&1 || break
+    sleep 0.5
+  done
   launchctl bootstrap "gui/$(id -u)" "$plist"
   say "Started the login service $label (log: $log)"
 elif [ "$service" = 1 ] && command -v systemctl >/dev/null 2>&1; then
@@ -105,7 +109,7 @@ elif [ "$service" = 1 ] && command -v systemctl >/dev/null 2>&1; then
 Description=rex-revive: bring back the agents in your Rex tabs after a restart
 
 [Service]
-ExecStart="$rex" --autostart=false do "$script" --all "rex=$rex"
+ExecStart=/bin/sh "$app/service.sh" "$rex" "$script"
 Restart=always
 RestartSec=10
 Environment="PATH=$path"

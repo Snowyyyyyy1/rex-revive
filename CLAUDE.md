@@ -9,6 +9,7 @@ test/ - unit tests in Rex Lua, end-to-end test on a throwaway Rex server, fake a
 
 <config>
 revive.lua - the entry point: `rex do revive.lua [--all] mode=…`; owns arguments, state.json, and the once-per-server restore
+service.sh - the login service's command: runs the watcher and restarts it within 1 s of the server's return (launchd/systemd alone wait 10 s)
 install.sh - installs the app, the launchd/systemd watcher, the palette actions, and with --pi the pi extension
 uninstall.sh - the exact inverse of install.sh; --purge also deletes the saves
 README.md - the user's manual

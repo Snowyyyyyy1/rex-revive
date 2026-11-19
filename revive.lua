@@ -84,12 +84,13 @@ local function report(result)
   return text .. "."
 end
 
+-- The watcher starts within a second of the server, often before the app reconnects.
 local function app_connected()
-  for _ = 1, APP_WAIT / 2 do
+  for _ = 1, APP_WAIT * 2 do
     for _, c in ipairs(util.list((rex.call("client.list") or {}).clients)) do
       if c.info and c.info.kind == "app" then return true end
     end
-    rex.sleep(2)
+    rex.sleep(0.5)
   end
   return false
 end
